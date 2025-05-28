@@ -38,6 +38,7 @@ public class SemanticKernelService : ISemanticKernelService
         
         // Add plugins
         builder.Plugins.AddFromType<GDPSearchPlugin>();
+        builder.Plugins.AddFromType<MathematicalOperationsPlugin>();
         
         _kernel = builder.Build();
         _chatService = _kernel.GetRequiredService<IChatCompletionService>();
@@ -112,7 +113,13 @@ public class SemanticKernelService : ISemanticKernelService
         {
             "- SearchGDP: Search for GDP data by location and type (parameters: location, gdpType)",
             "- GetAvailableLocations: Get list of available locations for GDP data",
-            "- CalculateGDPPercentage: Calculate percentage between two GDP values (parameters: value1, value2)"
+            "- CalculateGDPPercentage: Calculate percentage between two GDP values (parameters: value1, value2)",
+            "- BasicArithmetic: Perform basic arithmetic operations (parameters: a, b, operation)",
+            "- PowerAndRoot: Calculate power and root operations (parameters: baseNumber, exponent, operation)",
+            "- FactorialAndCombinatorics: Calculate factorial, combinations, permutations (parameters: n, r, operation)",
+            "- PrimeOperations: Prime number operations (parameters: number, operation, rangeEnd)",
+            "- SequenceOperations: Generate mathematical sequences (parameters: sequenceType, terms, firstTerm, commonValue)",
+            "- ComplexCalculation: Perform complex multi-step calculations (parameters: expression, numbersJson)"
         });
 
         var workingMemoryText = state.WorkingMemory.Any() 
@@ -120,7 +127,7 @@ public class SemanticKernelService : ISemanticKernelService
             : "No previous context";
 
         return $$$"""
-            You are an intelligent React Agent specialized in economic data analysis and research.
+            You are an intelligent React Agent specialized in economic data analysis, research, and mathematical computations.
             
             Your capabilities include:
             {{{availableFunctions}}}
@@ -131,13 +138,15 @@ public class SemanticKernelService : ISemanticKernelService
             
             Instructions:
             1. Analyze the user's request carefully
-            2. Use available functions when you need specific data
-            3. Provide comprehensive, accurate answers with specific numbers when available
-            4. If you need to search for data, use the appropriate search functions
-            5. Always explain your reasoning and show calculations when relevant
-            6. Be concise but thorough in your responses
+            2. Use available functions when you need specific data or mathematical calculations
+            3. For mathematical problems, break down complex calculations into steps using appropriate functions
+            4. Provide comprehensive, accurate answers with specific numbers when available
+            5. If you need to search for data, use the appropriate search functions
+            6. For mathematical operations, use the mathematical functions to ensure accuracy
+            7. Always explain your reasoning and show calculations when relevant
+            8. Be concise but thorough in your responses
             
-            You have access to GDP data and can perform calculations. Use the functions as needed to provide accurate, data-driven responses.
+            You have access to GDP data and comprehensive mathematical operations. Use the functions as needed to provide accurate, data-driven responses and precise mathematical calculations.
             """;
     }
 

@@ -46,8 +46,8 @@ class Program
             // Get the Orleans client
             var client = host.Services.GetRequiredService<IClusterClient>();
 
-            // Test the enhanced React Agent
-            await TestEnhancedReactAgent(client);
+            // Present test case menu
+            await PresentTestCaseMenu(client);
         }
         catch (Exception ex)
         {
@@ -86,11 +86,57 @@ class Program
 
     static async Task TestEnhancedReactAgent(IClusterClient client)
     {
-        Console.WriteLine("🤖 Testing Enhanced React Agent with Real OpenAI Integration");
-        Console.WriteLine("==========================================================");
+        Console.WriteLine("🤖 Testing Enhanced React Agent with Real OpenAI Integration - Mathematical Operations");
+        Console.WriteLine("===================================================================================");
 
         // Create an agent instance
-        var agentId = "openai-agent-001";
+        var agentId = "math-agent-001";
+        var agent = client.GetGrain<IAgentGrain>(agentId);
+
+        // Reset the agent to ensure clean state
+        await agent.ResetAsync();
+
+        // Define the test task
+        var testTask = "Calculate the following complex mathematical expression: Find the factorial of 8, then calculate 2^10, generate the first 12 fibonacci numbers and sum them, find all prime numbers between 50 and 100, and finally perform this calculation: (8! + 2^10 + fibonacci_sum) / number_of_primes_found. Show all intermediate steps.";
+        Console.WriteLine($"📝 Task: {testTask}");
+        Console.WriteLine();
+
+        // Execute the task
+        Console.WriteLine("🔄 Executing task with real OpenAI GPT-4o-mini reasoning...");
+        Console.WriteLine("⏳ This may take a moment as we make real API calls...");
+        var startTime = DateTime.UtcNow;
+        
+        var result = await agent.ExecuteTaskAsync(testTask);
+        
+        var endTime = DateTime.UtcNow;
+        var duration = endTime - startTime;
+
+        Console.WriteLine($"⏱️  Total execution time: {duration.TotalSeconds:F2} seconds");
+        Console.WriteLine();
+
+        // Display detailed execution analysis
+        await DisplayDetailedExecutionAnalysis(agent);
+
+        // Display the final result
+        Console.WriteLine("🎯 Final Result:");
+        Console.WriteLine("================");
+        Console.WriteLine(result);
+        Console.WriteLine();
+
+        // Display performance metrics
+        await DisplayPerformanceMetrics(agent);
+
+        // Display agent state summary
+        await DisplayAgentStateSummary(agent);
+    }
+
+    static async Task TestGDPAnalysisAgent(IClusterClient client)
+    {
+        Console.WriteLine("🤖 Testing Enhanced React Agent with Real OpenAI Integration - GDP Analysis");
+        Console.WriteLine("=========================================================================");
+
+        // Create an agent instance
+        var agentId = "gdp-agent-001";
         var agent = client.GetGrain<IAgentGrain>(agentId);
 
         // Reset the agent to ensure clean state
@@ -126,8 +172,8 @@ class Program
         // Display performance metrics
         await DisplayPerformanceMetrics(agent);
 
-        // Display agent state summary
-        await DisplayAgentStateSummary(agent);
+        // Display agent state summary for GDP
+        await DisplayGDPAgentStateSummary(agent);
     }
 
     static async Task DisplayDetailedExecutionAnalysis(IAgentGrain agent)
@@ -246,11 +292,94 @@ class Program
         }
 
         Console.WriteLine("\n🌟 Real AI Integration Benefits Demonstrated:");
-        Console.WriteLine("• OpenAI GPT-4o-mini: Real AI reasoning and decision making");
+        Console.WriteLine("• OpenAI GPT-4o-mini: Real AI reasoning and mathematical decision making");
         Console.WriteLine("• Orleans: Distributed state management and fault tolerance");
-        Console.WriteLine("• Semantic Kernel: Enterprise-grade AI integration");
-        Console.WriteLine("• React Pattern: Structured AI thought → action → observation loop");
+        Console.WriteLine("• Semantic Kernel: Enterprise-grade AI integration with mathematical plugins");
+        Console.WriteLine("• React Pattern: Structured AI thought → action → observation loop for complex calculations");
+        Console.WriteLine("• Mathematical Operations: Comprehensive integer mathematics with factorial, prime, fibonacci, and more");
         Console.WriteLine("• Cost Efficiency: Using GPT-4o-mini for optimal cost/performance ratio");
         Console.WriteLine("• Production Ready: Real API integration with proper error handling");
+    }
+
+    static async Task DisplayGDPAgentStateSummary(IAgentGrain agent)
+    {
+        Console.WriteLine("🔍 Agent State Summary:");
+        Console.WriteLine("=======================");
+
+        var state = await agent.GetStateAsync();
+        
+        Console.WriteLine($"Agent ID: {state.AgentId}");
+        Console.WriteLine($"Task: {state.CurrentTask}");
+        Console.WriteLine($"Status: {(state.IsTaskCompleted ? "✅ Completed" : "⏳ In Progress")}");
+        Console.WriteLine($"Current Step: {state.CurrentStepNumber}/{state.MaxSteps}");
+        Console.WriteLine($"Working Memory Items: {state.WorkingMemory.Count}");
+        Console.WriteLine($"Long-term Memory Items: {state.LongTermMemory.Count}");
+        Console.WriteLine($"Created: {state.CreatedAt:yyyy-MM-dd HH:mm:ss}");
+        Console.WriteLine($"Last Updated: {state.LastUpdated:yyyy-MM-dd HH:mm:ss}");
+        
+        if (state.TaskStartedAt.HasValue)
+        {
+            Console.WriteLine($"Task Started: {state.TaskStartedAt:yyyy-MM-dd HH:mm:ss}");
+        }
+        
+        if (state.TaskCompletedAt.HasValue)
+        {
+            Console.WriteLine($"Task Completed: {state.TaskCompletedAt:yyyy-MM-dd HH:mm:ss}");
+        }
+
+        if (state.WorkingMemory.Any())
+        {
+            Console.WriteLine("\n🧠 Working Memory:");
+            foreach (var item in state.WorkingMemory.Take(3)) // Show first 3 items
+            {
+                var value = item.Value.ToString();
+                var truncatedValue = value?.Length > 100 ? value[..100] + "..." : value;
+                Console.WriteLine($"  • {item.Key}: {truncatedValue}");
+            }
+            
+            if (state.WorkingMemory.Count > 3)
+            {
+                Console.WriteLine($"  ... and {state.WorkingMemory.Count - 3} more items");
+            }
+        }
+
+        Console.WriteLine("\n🌟 Real AI Integration Benefits Demonstrated:");
+        Console.WriteLine("• OpenAI GPT-4o-mini: Real AI reasoning and GDP analysis");
+        Console.WriteLine("• Orleans: Distributed state management and fault tolerance");
+        Console.WriteLine("• Semantic Kernel: Enterprise-grade AI integration with GDP analysis plugins");
+        Console.WriteLine("• React Pattern: Structured AI thought → action → observation loop for GDP analysis");
+        Console.WriteLine("• GDP Analysis: Comprehensive economic analysis with GDP growth and percentage calculations");
+        Console.WriteLine("• Cost Efficiency: Using GPT-4o-mini for optimal cost/performance ratio");
+        Console.WriteLine("• Production Ready: Real API integration with proper error handling");
+    }
+
+    static async Task PresentTestCaseMenu(IClusterClient client)
+    {
+        Console.WriteLine("🤖 Presenting Test Case Menu");
+        Console.WriteLine("==========================");
+        Console.WriteLine("1. Test Enhanced React Agent with Mathematical Operations");
+        Console.WriteLine("2. Test Enhanced React Agent with GDP Analysis");
+        Console.WriteLine("3. Exit");
+        Console.WriteLine();
+
+        Console.Write("Enter your choice: ");
+        var choice = Console.ReadLine();
+
+        switch (choice)
+        {
+            case "1":
+                await TestEnhancedReactAgent(client);
+                break;
+            case "2":
+                await TestGDPAnalysisAgent(client);
+                break;
+            case "3":
+                Console.WriteLine("Exiting test case menu.");
+                return;
+            default:
+                Console.WriteLine("Invalid choice. Please enter a valid option.");
+                await PresentTestCaseMenu(client);
+                break;
+        }
     }
 } 
