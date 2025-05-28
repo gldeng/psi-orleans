@@ -18,6 +18,22 @@ class Program
         Console.WriteLine("🚀 Advanced AI Agent with distributed state management");
         Console.WriteLine();
 
+        // Check for OpenAI API key
+        var openAiApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        if (string.IsNullOrEmpty(openAiApiKey))
+        {
+            Console.WriteLine("❌ Error: OPENAI_API_KEY environment variable is not set.");
+            Console.WriteLine("📝 Please set your OpenAI API key:");
+            Console.WriteLine("   export OPENAI_API_KEY='your-api-key-here'");
+            Console.WriteLine();
+            Console.WriteLine("💡 You can get an API key from: https://platform.openai.com/api-keys");
+            return;
+        }
+
+        Console.WriteLine("✅ OpenAI API key found");
+        Console.WriteLine($"🤖 Using GPT-4o-mini for cost-efficient AI reasoning");
+        Console.WriteLine();
+
         // Build and start the Orleans host with Semantic Kernel integration
         var host = CreateHostBuilder(args).Build();
         
@@ -36,6 +52,10 @@ class Program
         catch (Exception ex)
         {
             Console.WriteLine($"❌ Error: {ex.Message}");
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine($"🔍 Inner exception: {ex.InnerException.Message}");
+            }
             Console.WriteLine($"📋 Stack trace: {ex.StackTrace}");
         }
         finally
@@ -66,11 +86,11 @@ class Program
 
     static async Task TestEnhancedReactAgent(IClusterClient client)
     {
-        Console.WriteLine("🤖 Testing Enhanced React Agent with Semantic Kernel");
-        Console.WriteLine("===================================================");
+        Console.WriteLine("🤖 Testing Enhanced React Agent with Real OpenAI Integration");
+        Console.WriteLine("==========================================================");
 
         // Create an agent instance
-        var agentId = "sk-agent-001";
+        var agentId = "openai-agent-001";
         var agent = client.GetGrain<IAgentGrain>(agentId);
 
         // Reset the agent to ensure clean state
@@ -82,7 +102,8 @@ class Program
         Console.WriteLine();
 
         // Execute the task
-        Console.WriteLine("🔄 Executing task with AI-powered reasoning...");
+        Console.WriteLine("🔄 Executing task with real OpenAI GPT-4o-mini reasoning...");
+        Console.WriteLine("⏳ This may take a moment as we make real API calls...");
         var startTime = DateTime.UtcNow;
         
         var result = await agent.ExecuteTaskAsync(testTask);
@@ -111,8 +132,8 @@ class Program
 
     static async Task DisplayDetailedExecutionAnalysis(IAgentGrain agent)
     {
-        Console.WriteLine("🧠 AI-Powered Execution Analysis:");
-        Console.WriteLine("=================================");
+        Console.WriteLine("🧠 Real AI-Powered Execution Analysis:");
+        Console.WriteLine("======================================");
 
         var executionHistory = await agent.GetExecutionHistoryAsync();
         
@@ -224,11 +245,12 @@ class Program
             }
         }
 
-        Console.WriteLine("\n🌟 Architecture Benefits Demonstrated:");
+        Console.WriteLine("\n🌟 Real AI Integration Benefits Demonstrated:");
+        Console.WriteLine("• OpenAI GPT-4o-mini: Real AI reasoning and decision making");
         Console.WriteLine("• Orleans: Distributed state management and fault tolerance");
-        Console.WriteLine("• Semantic Kernel: AI-powered reasoning and plugin ecosystem");
-        Console.WriteLine("• React Pattern: Structured thought → action → observation loop");
-        Console.WriteLine("• Scalability: Agent can be distributed across multiple servers");
-        Console.WriteLine("• Extensibility: Easy to add new plugins and capabilities");
+        Console.WriteLine("• Semantic Kernel: Enterprise-grade AI integration");
+        Console.WriteLine("• React Pattern: Structured AI thought → action → observation loop");
+        Console.WriteLine("• Cost Efficiency: Using GPT-4o-mini for optimal cost/performance ratio");
+        Console.WriteLine("• Production Ready: Real API integration with proper error handling");
     }
 } 
