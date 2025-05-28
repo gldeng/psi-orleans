@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "psi-orleans", "psi-orleans.csproj", "{3DA17096-3842-CAF5-FF15-ED7BF6F2A0CD}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{3DA17096-3842-CAF5-FF15-ED7BF6F2A0CD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3DA17096-3842-CAF5-FF15-ED7BF6F2A0CD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3DA17096-3842-CAF5-FF15-ED7BF6F2A0CD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3DA17096-3842-CAF5-FF15-ED7BF6F2A0CD}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {6CDD2DC3-E461-4288-A574-CFC2D784B564}
+	EndGlobalSection
+EndGlobal
