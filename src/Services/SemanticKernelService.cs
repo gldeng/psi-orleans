@@ -1,5 +1,6 @@
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using PsiOrleans.Models;
@@ -41,155 +42,118 @@ public class SemanticKernelService : ISemanticKernelService
         _kernel = builder.Build();
         _chatService = _kernel.GetRequiredService<IChatCompletionService>();
         
-        _logger.LogInformation("SemanticKernelService initialized with OpenAI GPT-4o-mini");
+        _logger.LogInformation("SemanticKernelService initialized with OpenAI GPT-4o-mini and automatic function calling");
     }
 
     public Kernel GetKernel() => _kernel;
 
-    public async Task<string> GenerateThoughtAsync(AgentState state)
+    public async Task<string> ExecuteTaskAsync(string task, AgentState state)
     {
         try
         {
-            var prompt = BuildThoughtPrompt(state);
-            var result = await _chatService.GetChatMessageContentAsync(prompt);
-            return result.Content ?? "I need to think about this task.";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error generating thought");
-            return $"Error in thinking: {ex.Message}";
-        }
-    }
-
-    public async Task<string> PlanNextActionAsync(AgentState state, string currentThought)
-    {
-        try
-        {
-            var prompt = BuildActionPlanPrompt(state, currentThought);
-            var result = await _chatService.GetChatMessageContentAsync(prompt);
-            return result.Content ?? "No action planned";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error planning action");
-            return $"Error in planning: {ex.Message}";
-        }
-    }
-
-    public async Task<FunctionResult> ExecuteFunctionAsync(string pluginName, string functionName, KernelArguments arguments)
-    {
-        try
-        {
-            var function = _kernel.Plugins[pluginName][functionName];
-            return await _kernel.InvokeAsync(function, arguments);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error executing function {Plugin}.{Function}", pluginName, functionName);
-            throw;
-        }
-    }
-
-    public async Task<string> GenerateFinalAnswerAsync(AgentState state)
-    {
-        try
-        {
-            var prompt = BuildFinalAnswerPrompt(state);
-            var result = await _chatService.GetChatMessageContentAsync(prompt);
-            return result.Content ?? "Unable to generate final answer";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error generating final answer");
-            return $"Error generating answer: {ex.Message}";
-        }
-    }
-
-    public async Task<bool> ShouldCompleteTaskAsync(AgentState state, string currentThought)
-    {
-        try
-        {
-            var prompt = $$$"""
-                Task: {{{state.CurrentTask}}}
-                Current thought: {{{currentThought}}}
-                Working memory: {{{JsonSerializer.Serialize(state.WorkingMemory)}}}
-                
-                Based on the current state, should this task be completed? 
-                Answer only 'YES' or 'NO'.
-                """;
+            _logger.LogInformation("Executing task with automatic function calling: {Task}", task);
             
-            var result = await _chatService.GetChatMessageContentAsync(prompt);
-            return result.Content?.Trim().ToUpper() == "YES";
+            // Create chat history
+            var chatHistory = new ChatHistory();
+            
+            // Add system message with context
+            var systemMessage = BuildSystemPrompt(state);
+            chatHistory.AddSystemMessage(systemMessage);
+            
+            // Add the user task
+            chatHistory.AddUserMessage(task);
+            
+            // Configure OpenAI settings for automatic function calling
+            var executionSettings = new OpenAIPromptExecutionSettings
+            {
+                ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions,
+                MaxTokens = 4000,
+                Temperature = 0.1 // Lower temperature for more consistent results
+            };
+            
+            // Execute with automatic function calling
+            var result = await _chatService.GetChatMessageContentAsync(
+                chatHistory, 
+                executionSettings, 
+                _kernel);
+            
+            var response = result.Content ?? "Task completed but no response generated.";
+            
+            // Store the interaction in agent state
+            state.WorkingMemory["last_task"] = task;
+            state.WorkingMemory["last_response"] = response;
+            state.WorkingMemory["execution_timestamp"] = DateTime.UtcNow.ToString("O");
+            
+            // Add execution step for tracking
+            await AddExecutionStep(state, StepType.FinalAnswer, response);
+            
+            _logger.LogInformation("Task execution completed successfully");
+            return response;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error determining task completion");
-            return false;
+            _logger.LogError(ex, "Error executing task with automatic function calling");
+            var errorMessage = $"Task execution failed: {ex.Message}";
+            await AddExecutionStep(state, StepType.Observation, errorMessage);
+            return errorMessage;
         }
     }
 
-    private string BuildThoughtPrompt(AgentState state)
+    public async Task<List<string>> GetChatHistoryAsync(AgentState state)
     {
-        var historyText = string.Join("\n", state.ExecutionHistory
-            .TakeLast(5)
-            .Select(h => $"Step {h.StepNumber} ({h.Type}): {h.Content}"));
+        return await Task.FromResult(state.ExecutionHistory
+            .Select(h => $"Step {h.StepNumber} ({h.Type}): {h.Content}")
+            .ToList());
+    }
+
+    private string BuildSystemPrompt(AgentState state)
+    {
+        var availableFunctions = string.Join("\n", new[]
+        {
+            "- SearchGDP: Search for GDP data by location and type (parameters: location, gdpType)",
+            "- GetAvailableLocations: Get list of available locations for GDP data",
+            "- CalculateGDPPercentage: Calculate percentage between two GDP values (parameters: value1, value2)"
+        });
+
+        var workingMemoryText = state.WorkingMemory.Any() 
+            ? JsonSerializer.Serialize(state.WorkingMemory, new JsonSerializerOptions { WriteIndented = true })
+            : "No previous context";
 
         return $$$"""
-            You are a React Agent working on this task: {{{state.CurrentTask}}}
+            You are an intelligent React Agent specialized in economic data analysis and research.
             
-            Current step: {{{state.CurrentStepNumber}}}
-            Working memory: {{{JsonSerializer.Serialize(state.WorkingMemory)}}}
+            Your capabilities include:
+            {{{availableFunctions}}}
             
-            Recent execution history:
-            {{{historyText}}}
+            Current context:
+            - Agent ID: {{{state.AgentId}}}
+            - Working Memory: {{{workingMemoryText}}}
             
-            What should you think about next? Be specific and actionable.
-            Focus on what information you need or what action to take.
-            Keep your response concise and focused.
+            Instructions:
+            1. Analyze the user's request carefully
+            2. Use available functions when you need specific data
+            3. Provide comprehensive, accurate answers with specific numbers when available
+            4. If you need to search for data, use the appropriate search functions
+            5. Always explain your reasoning and show calculations when relevant
+            6. Be concise but thorough in your responses
+            
+            You have access to GDP data and can perform calculations. Use the functions as needed to provide accurate, data-driven responses.
             """;
     }
 
-    private string BuildActionPlanPrompt(AgentState state, string currentThought)
+    private async Task AddExecutionStep(AgentState state, StepType type, string content)
     {
-        return $$$"""
-            Task: {{{state.CurrentTask}}}
-            Current thought: {{{currentThought}}}
-            
-            Available functions:
-            - GDPSearchPlugin.SearchGDP: Search for GDP data by location and type
-            - GDPSearchPlugin.GetAvailableLocations: Get list of available locations
-            - GDPSearchPlugin.CalculateGDPPercentage: Calculate percentage between two GDP values
-            
-            Based on your current thought, what specific action should you take?
-            If you need to call a function, specify:
-            - Plugin name
-            - Function name  
-            - Parameters as JSON
-            
-            If no action is needed, say "NO_ACTION".
-            
-            Format your response as: PLUGIN_NAME.FUNCTION_NAME with parameters: {"param1": "value1"}
-            
-            Be precise with parameter names and values.
-            """;
-    }
-
-    private string BuildFinalAnswerPrompt(AgentState state)
-    {
-        var historyText = string.Join("\n", state.ExecutionHistory
-            .Select(h => $"Step {h.StepNumber} ({h.Type}): {h.Content}"));
-
-        return $$$"""
-            Task: {{{state.CurrentTask}}}
-            
-            Complete execution history:
-            {{{historyText}}}
-            
-            Working memory: {{{JsonSerializer.Serialize(state.WorkingMemory)}}}
-            
-            Based on all the information gathered, provide a comprehensive final answer to the task.
-            Be specific, include numbers and calculations where relevant.
-            Format your response clearly and professionally.
-            """;
+        var step = new AgentStep
+        {
+            StepNumber = ++state.CurrentStepNumber,
+            Type = type,
+            Content = content,
+            Timestamp = DateTime.UtcNow
+        };
+        
+        state.ExecutionHistory.Add(step);
+        state.LastUpdated = DateTime.UtcNow;
+        
+        await Task.CompletedTask; // For consistency with async pattern
     }
 } 

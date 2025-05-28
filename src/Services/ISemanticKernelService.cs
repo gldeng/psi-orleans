@@ -11,27 +11,12 @@ public interface ISemanticKernelService
     Kernel GetKernel();
     
     /// <summary>
-    /// Generate a thought based on current agent state
+    /// Execute a task using Semantic Kernel's automatic function calling
     /// </summary>
-    Task<string> GenerateThoughtAsync(AgentState state);
+    Task<string> ExecuteTaskAsync(string task, AgentState state);
     
     /// <summary>
-    /// Plan the next action based on current thought and state
+    /// Get chat history for the agent
     /// </summary>
-    Task<string> PlanNextActionAsync(AgentState state, string currentThought);
-    
-    /// <summary>
-    /// Execute a function with the given parameters
-    /// </summary>
-    Task<FunctionResult> ExecuteFunctionAsync(string pluginName, string functionName, KernelArguments arguments);
-    
-    /// <summary>
-    /// Generate final answer based on execution history
-    /// </summary>
-    Task<string> GenerateFinalAnswerAsync(AgentState state);
-    
-    /// <summary>
-    /// Determine if the task should be completed
-    /// </summary>
-    Task<bool> ShouldCompleteTaskAsync(AgentState state, string currentThought);
+    Task<List<string>> GetChatHistoryAsync(AgentState state);
 } 
