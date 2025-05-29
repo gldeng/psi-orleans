@@ -9,7 +9,7 @@ namespace PsiOrleans.Grains;
 public interface IAgentGrain : IGrainWithStringKey
 {
     /// <summary>
-    /// Execute a task using the React Agent pattern with Semantic Kernel
+    /// Execute a task using the React Agent pattern with automatic function calling
     /// </summary>
     Task<string> ExecuteTaskAsync(string task);
     
@@ -37,4 +37,29 @@ public interface IAgentGrain : IGrainWithStringKey
     /// Get performance metrics
     /// </summary>
     Task<(int TotalSteps, int SuccessfulSteps, int FailedSteps, TimeSpan ExecutionTime)> GetMetricsAsync();
+
+    /// <summary>
+    /// Get the chat history
+    /// </summary>
+    Task<List<ChatMessage>> GetChatHistoryAsync();
+
+    /// <summary>
+    /// Add a message to the chat history
+    /// </summary>
+    Task AddChatMessageAsync(string role, string content, string? name = null);
+
+    /// <summary>
+    /// Clear the chat history
+    /// </summary>
+    Task ClearChatHistoryAsync();
+
+    /// <summary>
+    /// Get the number of messages in chat history
+    /// </summary>
+    Task<int> GetChatHistoryCountAsync();
+
+    /// <summary>
+    /// Continue a conversation with a new message (maintains chat history)
+    /// </summary>
+    Task<string> ContinueConversationAsync(string userMessage);
 } 

@@ -54,15 +54,20 @@ public class SemanticKernelService : ISemanticKernelService
         {
             _logger.LogInformation("Executing task with automatic function calling: {Task}", task);
             
-            // Create chat history
-            var chatHistory = new ChatHistory();
+            // Use existing chat history from state or create new one
+            var chatHistory = state.ToSemanticKernelChatHistory();
             
-            // Add system message with context
-            var systemMessage = BuildSystemPrompt(state);
-            chatHistory.AddSystemMessage(systemMessage);
+            // If this is a fresh conversation, add system message
+            if (chatHistory.Count == 0)
+            {
+                var systemMessage = BuildSystemPrompt(state);
+                chatHistory.AddSystemMessage(systemMessage);
+                state.AddChatMessage("system", systemMessage);
+            }
             
             // Add the user task
             chatHistory.AddUserMessage(task);
+            state.AddChatMessage("user", task);
             
             // Configure OpenAI settings for automatic function calling
             var executionSettings = new OpenAIPromptExecutionSettings
@@ -79,6 +84,9 @@ public class SemanticKernelService : ISemanticKernelService
                 _kernel);
             
             var response = result.Content ?? "Task completed but no response generated.";
+            
+            // Add assistant response to chat history
+            state.AddChatMessage("assistant", response);
             
             // Store the interaction in agent state
             state.WorkingMemory["last_task"] = task;
@@ -100,10 +108,66 @@ public class SemanticKernelService : ISemanticKernelService
         }
     }
 
+    public async Task<string> ContinueConversationAsync(string userMessage, AgentState state)
+    {
+        try
+        {
+            _logger.LogInformation("Continuing conversation with message: {Message}", userMessage);
+            
+            // Use existing chat history from state
+            var chatHistory = state.ToSemanticKernelChatHistory();
+            
+            // If no chat history exists, initialize with system message
+            if (chatHistory.Count == 0)
+            {
+                var systemMessage = BuildSystemPrompt(state);
+                chatHistory.AddSystemMessage(systemMessage);
+                state.AddChatMessage("system", systemMessage);
+            }
+            
+            // Add the user message
+            chatHistory.AddUserMessage(userMessage);
+            state.AddChatMessage("user", userMessage);
+            
+            // Configure OpenAI settings for automatic function calling
+            var executionSettings = new OpenAIPromptExecutionSettings
+            {
+                ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions,
+                MaxTokens = 4000,
+                Temperature = 0.1
+            };
+            
+            // Execute with automatic function calling
+            var result = await _chatService.GetChatMessageContentAsync(
+                chatHistory, 
+                executionSettings, 
+                _kernel);
+            
+            var response = result.Content ?? "No response generated.";
+            
+            // Add assistant response to chat history
+            state.AddChatMessage("assistant", response);
+            
+            // Update working memory
+            state.WorkingMemory["last_user_message"] = userMessage;
+            state.WorkingMemory["last_assistant_response"] = response;
+            state.WorkingMemory["conversation_timestamp"] = DateTime.UtcNow.ToString("O");
+            
+            _logger.LogInformation("Conversation continued successfully");
+            return response;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error continuing conversation");
+            var errorMessage = $"Conversation failed: {ex.Message}";
+            return errorMessage;
+        }
+    }
+
     public async Task<List<string>> GetChatHistoryAsync(AgentState state)
     {
-        return await Task.FromResult(state.ExecutionHistory
-            .Select(h => $"Step {h.StepNumber} ({h.Type}): {h.Content}")
+        return await Task.FromResult(state.ChatHistory
+            .Select(h => $"{h.Role}: {h.Content}")
             .ToList());
     }
 
@@ -135,6 +199,7 @@ public class SemanticKernelService : ISemanticKernelService
             Current context:
             - Agent ID: {{{state.AgentId}}}
             - Working Memory: {{{workingMemoryText}}}
+            - Chat History Messages: {{{state.GetChatHistoryCount()}}}
             
             Instructions:
             1. Analyze the user's request carefully
@@ -145,6 +210,7 @@ public class SemanticKernelService : ISemanticKernelService
             6. For mathematical operations, use the mathematical functions to ensure accuracy
             7. Always explain your reasoning and show calculations when relevant
             8. Be concise but thorough in your responses
+            9. Maintain conversation context from previous messages
             
             You have access to GDP data and comprehensive mathematical operations. Use the functions as needed to provide accurate, data-driven responses and precise mathematical calculations.
             """;

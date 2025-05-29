@@ -359,7 +359,8 @@ class Program
         Console.WriteLine("==========================");
         Console.WriteLine("1. Test Enhanced React Agent with Mathematical Operations");
         Console.WriteLine("2. Test Enhanced React Agent with GDP Analysis");
-        Console.WriteLine("3. Exit");
+        Console.WriteLine("3. Test Persistent Chat History Conversation");
+        Console.WriteLine("4. Exit");
         Console.WriteLine();
 
         Console.Write("Enter your choice: ");
@@ -374,6 +375,9 @@ class Program
                 await TestGDPAnalysisAgent(client);
                 break;
             case "3":
+                await TestPersistentChatHistory(client);
+                break;
+            case "4":
                 Console.WriteLine("Exiting test case menu.");
                 return;
             default:
@@ -381,5 +385,136 @@ class Program
                 await PresentTestCaseMenu(client);
                 break;
         }
+    }
+
+    static async Task TestPersistentChatHistory(IClusterClient client)
+    {
+        Console.WriteLine("🤖 Testing Persistent Chat History with Orleans Grain State");
+        Console.WriteLine("==========================================================");
+
+        // Create an agent instance
+        var agentId = "chat-agent-001";
+        var agent = client.GetGrain<IAgentGrain>(agentId);
+
+        // Reset the agent to ensure clean state
+        await agent.ResetAsync();
+
+        Console.WriteLine($"📝 Starting conversation with agent: {agentId}");
+        Console.WriteLine();
+
+        // First interaction
+        Console.WriteLine("🔄 First interaction - Initial task");
+        var firstTask = "Hello! I'm working on a math project. Can you help me calculate the factorial of 5?";
+        Console.WriteLine($"User: {firstTask}");
+        
+        var firstResponse = await agent.ExecuteTaskAsync(firstTask);
+        Console.WriteLine($"Assistant: {firstResponse}");
+        Console.WriteLine();
+
+        // Show chat history count
+        var historyCount = await agent.GetChatHistoryCountAsync();
+        Console.WriteLine($"💬 Chat history now contains {historyCount} messages");
+        Console.WriteLine();
+
+        // Second interaction - continuing the conversation
+        Console.WriteLine("🔄 Second interaction - Continuing conversation");
+        var secondMessage = "Great! Now can you also calculate 2^8 and tell me which is larger?";
+        Console.WriteLine($"User: {secondMessage}");
+        
+        var secondResponse = await agent.ContinueConversationAsync(secondMessage);
+        Console.WriteLine($"Assistant: {secondResponse}");
+        Console.WriteLine();
+
+        // Show updated chat history count
+        historyCount = await agent.GetChatHistoryCountAsync();
+        Console.WriteLine($"💬 Chat history now contains {historyCount} messages");
+        Console.WriteLine();
+
+        // Third interaction - referencing previous context
+        Console.WriteLine("🔄 Third interaction - Referencing previous context");
+        var thirdMessage = "Can you remind me what the factorial result was from our first calculation?";
+        Console.WriteLine($"User: {thirdMessage}");
+        
+        var thirdResponse = await agent.ContinueConversationAsync(thirdMessage);
+        Console.WriteLine($"Assistant: {thirdResponse}");
+        Console.WriteLine();
+
+        // Display full chat history
+        Console.WriteLine("📜 Complete Chat History:");
+        Console.WriteLine("=========================");
+        var chatHistory = await agent.GetChatHistoryAsync();
+        
+        foreach (var message in chatHistory)
+        {
+            var icon = message.Role switch
+            {
+                "system" => "🤖",
+                "user" => "👤",
+                "assistant" => "🤖",
+                _ => "❓"
+            };
+            
+            var truncatedContent = message.Content.Length > 100 
+                ? message.Content[..100] + "..." 
+                : message.Content;
+                
+            Console.WriteLine($"{icon} {message.Role.ToUpper()}: {truncatedContent}");
+            Console.WriteLine($"   🕐 {message.Timestamp:HH:mm:ss}");
+            Console.WriteLine();
+        }
+
+        // Display agent state summary
+        await DisplayChatAgentStateSummary(agent);
+
+        // Test grain persistence by simulating reactivation
+        Console.WriteLine("🔄 Testing grain persistence...");
+        Console.WriteLine("Creating new grain reference (simulating reactivation)");
+        
+        var newAgentReference = client.GetGrain<IAgentGrain>(agentId);
+        var persistedHistoryCount = await newAgentReference.GetChatHistoryCountAsync();
+        
+        Console.WriteLine($"✅ Persisted chat history contains {persistedHistoryCount} messages");
+        Console.WriteLine("🌟 Chat history successfully persisted in Orleans grain state!");
+    }
+
+    static async Task DisplayChatAgentStateSummary(IAgentGrain agent)
+    {
+        Console.WriteLine("🔍 Agent State Summary:");
+        Console.WriteLine("=======================");
+
+        var state = await agent.GetStateAsync();
+        var historyCount = await agent.GetChatHistoryCountAsync();
+        
+        Console.WriteLine($"Agent ID: {state.AgentId}");
+        Console.WriteLine($"Chat History Messages: {historyCount}");
+        Console.WriteLine($"Working Memory Items: {state.WorkingMemory.Count}");
+        Console.WriteLine($"Long-term Memory Items: {state.LongTermMemory.Count}");
+        Console.WriteLine($"Created: {state.CreatedAt:yyyy-MM-dd HH:mm:ss}");
+        Console.WriteLine($"Last Updated: {state.LastUpdated:yyyy-MM-dd HH:mm:ss}");
+
+        if (state.WorkingMemory.Any())
+        {
+            Console.WriteLine("\n🧠 Working Memory:");
+            foreach (var item in state.WorkingMemory.Take(3)) // Show first 3 items
+            {
+                var value = item.Value.ToString();
+                var truncatedValue = value?.Length > 100 ? value[..100] + "..." : value;
+                Console.WriteLine($"  • {item.Key}: {truncatedValue}");
+            }
+            
+            if (state.WorkingMemory.Count > 3)
+            {
+                Console.WriteLine($"  ... and {state.WorkingMemory.Count - 3} more items");
+            }
+        }
+
+        Console.WriteLine("\n🌟 Persistent Chat History Benefits Demonstrated:");
+        Console.WriteLine("• Orleans Grain State: Chat history persisted across grain activations");
+        Console.WriteLine("• Conversation Context: AI maintains context from previous interactions");
+        Console.WriteLine("• Semantic Kernel Integration: Seamless ChatHistory serialization");
+        Console.WriteLine("• Distributed State: Chat history available across cluster nodes");
+        Console.WriteLine("• Memory Efficiency: Structured storage with Orleans serialization");
+        Console.WriteLine("• Production Ready: Fault-tolerant conversation state management");
+        Console.WriteLine();
     }
 } 

@@ -70,6 +70,33 @@ public class AgentGrain : Grain, IAgentGrain
         }
     }
 
+    public async Task<string> ContinueConversationAsync(string userMessage)
+    {
+        _logger.LogInformation("Agent {AgentId} continuing conversation with: {Message}", _state.AgentId, userMessage);
+        
+        _state.LastUpdated = DateTime.UtcNow;
+
+        try
+        {
+            // Continue the conversation using the persistent chat history
+            var result = await _kernelService.ContinueConversationAsync(userMessage, _state);
+            
+            _state.SuccessfulSteps++;
+            
+            _logger.LogInformation("Agent {AgentId} continued conversation successfully", _state.AgentId);
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error continuing conversation for agent {AgentId}", _state.AgentId);
+            _state.FailedSteps++;
+            
+            var errorMessage = $"Conversation failed: {ex.Message}";
+            return errorMessage;
+        }
+    }
+
     public Task<AgentState> GetStateAsync()
     {
         return Task.FromResult(_state);
@@ -78,6 +105,30 @@ public class AgentGrain : Grain, IAgentGrain
     public Task<List<AgentStep>> GetExecutionHistoryAsync()
     {
         return Task.FromResult(_state.ExecutionHistory);
+    }
+
+    public Task<List<ChatMessage>> GetChatHistoryAsync()
+    {
+        return Task.FromResult(_state.ChatHistory);
+    }
+
+    public Task AddChatMessageAsync(string role, string content, string? name = null)
+    {
+        _state.AddChatMessage(role, content, name);
+        _logger.LogInformation("Agent {AgentId} added chat message: {Role}", _state.AgentId, role);
+        return Task.CompletedTask;
+    }
+
+    public Task ClearChatHistoryAsync()
+    {
+        _state.ClearChatHistory();
+        _logger.LogInformation("Agent {AgentId} cleared chat history", _state.AgentId);
+        return Task.CompletedTask;
+    }
+
+    public Task<int> GetChatHistoryCountAsync()
+    {
+        return Task.FromResult(_state.GetChatHistoryCount());
     }
 
     public Task ResetAsync()
