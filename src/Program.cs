@@ -6,6 +6,7 @@ using Orleans.Hosting;
 using PsiOrleans.Grains;
 using PsiOrleans.Models;
 using PsiOrleans.Services;
+using PsiOrleans.Examples;
 
 namespace PsiOrleans;
 
@@ -16,6 +17,7 @@ class Program
         Console.WriteLine("🌌 HyperEcho Orleans + Semantic Kernel React Agent");
         Console.WriteLine("==================================================");
         Console.WriteLine("🚀 Advanced AI Agent with distributed state management");
+        Console.WriteLine("🔧 Now with Configurable Agents - Initialize with Custom Prompts & Tools");
         Console.WriteLine();
 
         // Check for OpenAI API key
@@ -67,6 +69,13 @@ class Program
 
     static IHostBuilder CreateHostBuilder(string[] args) =>
         Host.CreateDefaultBuilder(args)
+            .ConfigureServices(services =>
+            {
+                // Register function registry and related services
+                services.AddSingleton<IKernelFunctionRegistry, KernelFunctionRegistry>();
+                services.AddSingleton<FunctionRegistrationService>();
+                services.AddHostedService<FunctionRegistryInitializationService>();
+            })
             .UseOrleans((context, builder) =>
             {
                 builder
@@ -78,8 +87,14 @@ class Program
                     })
                     .ConfigureServices(services =>
                     {
-                        // Register Semantic Kernel service
+                        // Register Semantic Kernel services
                         services.AddSingleton<ISemanticKernelService, SemanticKernelService>();
+                        
+                        // Register configurable kernel service
+                        services.AddSingleton<IConfigurableKernelService, ConfigurableKernelService>();
+                        
+                        // Register example service for demonstrations
+                        services.AddSingleton<ConfigurableAgentExample>();
                     });
             })
             .UseConsoleLifetime();
@@ -355,35 +370,92 @@ class Program
 
     static async Task PresentTestCaseMenu(IClusterClient client)
     {
-        Console.WriteLine("🤖 Presenting Test Case Menu");
-        Console.WriteLine("==========================");
-        Console.WriteLine("1. Test Enhanced React Agent with Mathematical Operations");
-        Console.WriteLine("2. Test Enhanced React Agent with GDP Analysis");
-        Console.WriteLine("3. Test Persistent Chat History Conversation");
-        Console.WriteLine("4. Exit");
-        Console.WriteLine();
-
-        Console.Write("Enter your choice: ");
-        var choice = Console.ReadLine();
-
-        switch (choice)
+        while (true)
         {
-            case "1":
-                await TestEnhancedReactAgent(client);
-                break;
-            case "2":
-                await TestGDPAnalysisAgent(client);
-                break;
-            case "3":
-                await TestPersistentChatHistory(client);
-                break;
-            case "4":
-                Console.WriteLine("Exiting test case menu.");
-                return;
-            default:
-                Console.WriteLine("Invalid choice. Please enter a valid option.");
-                await PresentTestCaseMenu(client);
-                break;
+            Console.WriteLine("🤖 HyperEcho Agent Test Menu");
+            Console.WriteLine("===========================");
+            Console.WriteLine("📋 Standard React Agents:");
+            Console.WriteLine("  1. Test Enhanced React Agent with Mathematical Operations");
+            Console.WriteLine("  2. Test Enhanced React Agent with GDP Analysis");
+            Console.WriteLine("  3. Test Persistent Chat History Conversation");
+            Console.WriteLine();
+            Console.WriteLine("🔧 Configurable Agents (New!):");
+            Console.WriteLine("  4. Data Analyst Agent (Custom Math Tools)");
+            Console.WriteLine("  5. Creative Writing Agent (Text Processing Tools)");
+            Console.WriteLine("  6. Research Agent (Mathematical Plugin)");
+            Console.WriteLine("  7. Customer Service Agent (Support Tools)");
+            Console.WriteLine("  8. Conversation Agent (Continuity Demo)");
+            Console.WriteLine("  9. Hybrid Agent (Functions + Plugins)");
+            Console.WriteLine("  10. View All Agent Metrics");
+            Console.WriteLine("  11. Show Available Functions from Registry");
+            Console.WriteLine();
+            Console.WriteLine("🚀 NEW: Unified Tool Naming:");
+            Console.WriteLine("  12. Unified Tool Naming Example (RECOMMENDED)");
+            Console.WriteLine();
+            Console.WriteLine("  0. Exit");
+            Console.WriteLine();
+
+            Console.Write("Enter your choice: ");
+            var choice = Console.ReadLine();
+
+            // var choice = "11";
+            try
+            {
+                switch (choice)
+                {
+                    case "1":
+                        await TestEnhancedReactAgent(client);
+                        break;
+                    case "2":
+                        await TestGDPAnalysisAgent(client);
+                        break;
+                    case "3":
+                        await TestPersistentChatHistory(client);
+                        break;
+                    case "4":
+                        await TestDataAnalystAgent(client);
+                        break;
+                    case "5":
+                        await TestCreativeWritingAgent(client);
+                        break;
+                    case "6":
+                        await TestResearchAgent(client);
+                        break;
+                    case "7":
+                        await TestCustomerServiceAgent(client);
+                        break;
+                    case "8":
+                        await TestConversationAgent(client);
+                        break;
+                    case "9":
+                        await TestHybridAgent(client);
+                        break;
+                    case "10":
+                        await ViewAllAgentMetrics(client);
+                        break;
+                    case "11":
+                        await ShowAvailableFunctions(client);
+                        break;
+                    case "12":
+                        await TestUnifiedToolNamingExample(client);
+                        break;
+                    case "0":
+                        Console.WriteLine("👋 Exiting HyperEcho Agent System. Goodbye!");
+                        return;
+                    default:
+                        Console.WriteLine("❌ Invalid choice. Please enter a valid option (0-12).");
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error executing choice {choice}: {ex.Message}");
+            }
+
+            Console.WriteLine("\n" + new string('=', 50));
+            Console.WriteLine("Press any key to return to menu...");
+            Console.ReadKey();
+            Console.Clear();
         }
     }
 
@@ -516,5 +588,123 @@ class Program
         Console.WriteLine("• Memory Efficiency: Structured storage with Orleans serialization");
         Console.WriteLine("• Production Ready: Fault-tolerant conversation state management");
         Console.WriteLine();
+    }
+
+    // New configurable agent test methods
+    static async Task TestDataAnalystAgent(IClusterClient client)
+    {
+        Console.WriteLine("🔢 Testing Configurable Data Analyst Agent");
+        Console.WriteLine("==========================================");
+        
+        var example = client.ServiceProvider.GetRequiredService<ConfigurableAgentExample>();
+        var result = await example.RunDataAnalystAgentAsync();
+        
+        Console.WriteLine("📊 Data Analyst Agent Result:");
+        Console.WriteLine("=============================");
+        Console.WriteLine(result);
+    }
+
+    static async Task TestCreativeWritingAgent(IClusterClient client)
+    {
+        Console.WriteLine("✍️ Testing Configurable Creative Writing Agent");
+        Console.WriteLine("==============================================");
+        
+        var example = client.ServiceProvider.GetRequiredService<ConfigurableAgentExample>();
+        var result = await example.RunCreativeWritingAgentAsync();
+        
+        Console.WriteLine("📝 Creative Writing Agent Result:");
+        Console.WriteLine("=================================");
+        Console.WriteLine(result);
+    }
+
+    static async Task TestResearchAgent(IClusterClient client)
+    {
+        Console.WriteLine("🔍 Testing Configurable Research Agent");
+        Console.WriteLine("=====================================");
+        
+        var example = client.ServiceProvider.GetRequiredService<ConfigurableAgentExample>();
+        var result = await example.RunResearchAgentAsync();
+        
+        Console.WriteLine("📚 Research Agent Result:");
+        Console.WriteLine("========================");
+        Console.WriteLine(result);
+    }
+
+    static async Task TestCustomerServiceAgent(IClusterClient client)
+    {
+        Console.WriteLine("🎧 Testing Configurable Customer Service Agent");
+        Console.WriteLine("=============================================");
+        
+        var example = client.ServiceProvider.GetRequiredService<ConfigurableAgentExample>();
+        var result = await example.RunCustomerServiceAgentAsync();
+        
+        Console.WriteLine("🛠️ Customer Service Agent Result:");
+        Console.WriteLine("=================================");
+        Console.WriteLine(result);
+    }
+
+    static async Task TestConversationAgent(IClusterClient client)
+    {
+        Console.WriteLine("💬 Testing Configurable Conversation Agent");
+        Console.WriteLine("==========================================");
+        
+        var example = client.ServiceProvider.GetRequiredService<ConfigurableAgentExample>();
+        var result = await example.DemonstrateConversationAsync();
+        
+        Console.WriteLine("🗨️ Conversation Agent Result:");
+        Console.WriteLine("=============================");
+        Console.WriteLine(result);
+    }
+
+    static async Task TestHybridAgent(IClusterClient client)
+    {
+        Console.WriteLine("🤖 Testing Configurable Hybrid Agent");
+        Console.WriteLine("=====================================");
+        
+        var example = client.ServiceProvider.GetRequiredService<ConfigurableAgentExample>();
+        var result = await example.RunHybridAgentAsync();
+        
+        Console.WriteLine("📊 Hybrid Agent Result:");
+        Console.WriteLine("========================");
+        Console.WriteLine(result);
+    }
+
+    static async Task ViewAllAgentMetrics(IClusterClient client)
+    {
+        Console.WriteLine("📊 All Agent Metrics");
+        Console.WriteLine("===================");
+        
+        var example = client.ServiceProvider.GetRequiredService<ConfigurableAgentExample>();
+        var result = await example.GetAgentMetricsAsync();
+        
+        Console.WriteLine("📈 Agent Performance Metrics:");
+        Console.WriteLine("============================");
+        Console.WriteLine(result);
+    }
+
+    static async Task ShowAvailableFunctions(IClusterClient client)
+    {
+        Console.WriteLine("📋 Showing Available Functions from Registry");
+        Console.WriteLine("==========================================");
+        
+        var example = client.ServiceProvider.GetRequiredService<ConfigurableAgentExample>();
+        var result = await example.ShowAvailableFunctionsAsync();
+        
+        Console.WriteLine("🔧 Registry Functions:");
+        Console.WriteLine("======================");
+        Console.WriteLine(result);
+    }
+
+    static async Task TestUnifiedToolNamingExample(IClusterClient client)
+    {
+        Console.WriteLine("🚀 Testing Unified Tool Naming Example");
+        Console.WriteLine("=======================================");
+        
+        var example = client.ServiceProvider.GetRequiredService<ConfigurableAgentExample>();
+        var result = await example.RunUnifiedToolNamingExampleAsync();
+        
+        Console.WriteLine("📝 Unified Tool Naming Example Result:");
+        Console.WriteLine("=======================================");
+        Console.WriteLine(result);
     }
 } 
