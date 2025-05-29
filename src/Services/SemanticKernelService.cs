@@ -3,6 +3,8 @@ using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.SemanticKernel.Plugins.Web.Tavily;
+using Microsoft.SemanticKernel.Data;
 using PsiOrleans.Models;
 using PsiOrleans.Plugins;
 using System.Text.Json;
@@ -37,7 +39,41 @@ public class SemanticKernelService : ISemanticKernelService
             apiKey: openAiApiKey);
         
         // Add plugins
-        builder.Plugins.AddFromType<GDPSearchPlugin>();
+        // Replace GDPSearchPlugin with Tavily web search
+        var tavilyApiKey = Environment.GetEnvironmentVariable("TAVILY_API_KEY");
+        if (!string.IsNullOrEmpty(tavilyApiKey))
+        {
+#pragma warning disable SKEXP0050 // Type is for evaluation purposes only and is subject to change or removal in future updates
+            var tavilySearch = new TavilyTextSearch(tavilyApiKey);
+            
+            // Create a kernel function for web search that properly handles async enumerable
+            var searchFunction = KernelFunctionFactory.CreateFromMethod(
+                async (string query) => 
+                {
+                    var searchResults = await tavilySearch.SearchAsync(query);
+                    var results = new List<string>();
+                    
+                    await foreach (var result in searchResults.Results)
+                    {
+                        results.Add(result);
+                    }
+                    
+                    return string.Join("\n\n", results);
+                },
+                functionName: "Search",
+                description: "Search the web for information");
+            
+            var searchPlugin = KernelPluginFactory.CreateFromFunctions("WebSearch", "Search the web for information", [searchFunction]);
+            builder.Plugins.Add(searchPlugin);
+#pragma warning restore SKEXP0050
+            _logger.LogInformation("Tavily web search plugin initialized");
+        }
+        else
+        {
+            _logger.LogWarning("TAVILY_API_KEY not found. Web search functionality will not be available. " +
+                             "Please set TAVILY_API_KEY environment variable to enable web search.");
+        }
+        
         builder.Plugins.AddFromType<MathematicalOperationsPlugin>();
         
         _kernel = builder.Build();
@@ -175,9 +211,7 @@ public class SemanticKernelService : ISemanticKernelService
     {
         var availableFunctions = string.Join("\n", new[]
         {
-            "- SearchGDP: Search for GDP data by location and type (parameters: location, gdpType)",
-            "- GetAvailableLocations: Get list of available locations for GDP data",
-            "- CalculateGDPPercentage: Calculate percentage between two GDP values (parameters: value1, value2)",
+            "- Search: Search the web for current information on any topic (parameter: query)",
             "- BasicArithmetic: Perform basic arithmetic operations (parameters: a, b, operation)",
             "- PowerAndRoot: Calculate power and root operations (parameters: baseNumber, exponent, operation)",
             "- FactorialAndCombinatorics: Calculate factorial, combinations, permutations (parameters: n, r, operation)",
@@ -191,7 +225,7 @@ public class SemanticKernelService : ISemanticKernelService
             : "No previous context";
 
         return $$$"""
-            You are an intelligent React Agent specialized in economic data analysis, research, and mathematical computations.
+            You are an intelligent React Agent specialized in research, data analysis, and mathematical computations.
             
             Your capabilities include:
             {{{availableFunctions}}}
@@ -204,15 +238,17 @@ public class SemanticKernelService : ISemanticKernelService
             Instructions:
             1. Analyze the user's request carefully
             2. Use available functions when you need specific data or mathematical calculations
-            3. For mathematical problems, break down complex calculations into steps using appropriate functions
-            4. Provide comprehensive, accurate answers with specific numbers when available
-            5. If you need to search for data, use the appropriate search functions
-            6. For mathematical operations, use the mathematical functions to ensure accuracy
-            7. Always explain your reasoning and show calculations when relevant
-            8. Be concise but thorough in your responses
-            9. Maintain conversation context from previous messages
+            3. For research questions, use the Search function to find current, accurate information from the web
+            4. For mathematical problems, break down complex calculations into steps using appropriate functions
+            5. Provide comprehensive, accurate answers with specific numbers when available
+            6. When searching for information, use clear and specific search queries
+            7. For mathematical operations, use the mathematical functions to ensure accuracy
+            8. Always explain your reasoning and show calculations when relevant
+            9. Be concise but thorough in your responses
+            10. Maintain conversation context from previous messages
+            11. When providing information from web search, mention that it's from current web sources
             
-            You have access to GDP data and comprehensive mathematical operations. Use the functions as needed to provide accurate, data-driven responses and precise mathematical calculations.
+            You have access to real-time web search and comprehensive mathematical operations. Use the functions as needed to provide accurate, up-to-date, data-driven responses and precise mathematical calculations.
             """;
     }
 
