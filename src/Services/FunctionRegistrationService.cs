@@ -1,6 +1,9 @@
 using Microsoft.SemanticKernel;
 using Microsoft.Extensions.Logging;
 using PsiOrleans.Plugins;
+using Microsoft.SemanticKernel.Plugins.Web.Tavily;
+using Orleans;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace PsiOrleans.Services;
 
@@ -11,13 +14,16 @@ public class FunctionRegistrationService
 {
     private readonly IKernelFunctionRegistry _functionRegistry;
     private readonly ILogger<FunctionRegistrationService> _logger;
+    private readonly IClusterClient _clusterClient;
 
     public FunctionRegistrationService(
         IKernelFunctionRegistry functionRegistry, 
-        ILogger<FunctionRegistrationService> logger)
+        ILogger<FunctionRegistrationService> logger,
+        IClusterClient clusterClient)
     {
         _functionRegistry = functionRegistry;
         _logger = logger;
+        _clusterClient = clusterClient;
     }
 
     /// <summary>
@@ -38,6 +44,9 @@ public class FunctionRegistrationService
         
         // Register utility functions
         RegisterUtilityFunctions();
+        
+        // Register agent proxy functions
+        RegisterAgentProxyFunctions();
         
         // Register plugins
         RegisterPlugins();
@@ -62,6 +71,12 @@ public class FunctionRegistrationService
                 (double a, double b) => a * b,
                 "Multiply", 
                 "Multiply two numbers"));
+
+        _functionRegistry.RegisterFunction("Math.Divide", 
+            KernelFunctionFactory.CreateFromMethod(
+                (double a, double b) => b != 0 ? a / b : throw new DivideByZeroException("Cannot divide by zero"),
+                "Divide",
+                "Divide two numbers"));
 
         _functionRegistry.RegisterFunction("Math.Average", 
             KernelFunctionFactory.CreateFromMethod(
@@ -175,10 +190,54 @@ public class FunctionRegistrationService
                 "Generate a new GUID"));
     }
 
+    private void RegisterAgentProxyFunctions()
+    {
+        _logger.LogInformation("Registering agent proxy functions");
+
+        try
+        {
+            // Create a logger for AgentProxyService using LoggerFactory
+            var serviceProvider = _clusterClient.ServiceProvider;
+            var loggerFactory = serviceProvider.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>();
+            var agentProxyLogger = loggerFactory.CreateLogger<AgentProxyService>();
+            
+            var agentProxyService = new AgentProxyService(_clusterClient, agentProxyLogger);
+
+            _functionRegistry.RegisterFunction("AgentProxy.WebSearchAgent", 
+                KernelFunctionFactory.CreateFromMethod(
+                    agentProxyService.WebSearchAgentAsync,
+                    "WebSearchAgent",
+                    "Delegates web search tasks to the specialized Web Search Agent (Agent B). Pass natural language queries about finding web data."));
+
+            _functionRegistry.RegisterFunction("AgentProxy.MathAgent", 
+                KernelFunctionFactory.CreateFromMethod(
+                    agentProxyService.MathAgentAsync,
+                    "MathAgent",
+                    "Delegates mathematical calculation tasks to the specialized Math Agent (Agent C). Pass natural language queries about calculations."));
+
+            _functionRegistry.RegisterFunction("AgentProxy.CallAgent", 
+                KernelFunctionFactory.CreateFromMethod(
+                    agentProxyService.CallAgentAsync,
+                    "CallAgent",
+                    "Calls any ConfigurableAgentGrain by its ID with a natural language query"));
+
+            _functionRegistry.RegisterFunction("AgentProxy.CheckAgentStatus", 
+                KernelFunctionFactory.CreateFromMethod(
+                    agentProxyService.CheckAgentStatusAsync,
+                    "CheckAgentStatus",
+                    "Checks if a specific agent is initialized and ready to handle requests"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to register AgentProxy functions");
+        }
+    }
+
     private void RegisterPlugins()
     {
         _logger.LogInformation("Registering plugins");
 
+        // Register MathematicalOperations plugin
         try
         {
             var mathPlugin = KernelPluginFactory.CreateFromType<MathematicalOperationsPlugin>();
@@ -189,8 +248,46 @@ public class FunctionRegistrationService
             _logger.LogWarning(ex, "Failed to register MathematicalOperationsPlugin");
         }
 
-        // Add more plugins here as they become available
-        // _functionRegistry.RegisterPlugin("WebSearch", webSearchPlugin);
-        // _functionRegistry.RegisterPlugin("FileOperations", fileOperationsPlugin);
+        // Register Tavily web search plugin
+        var tavilyApiKey = Environment.GetEnvironmentVariable("TAVILY_API_KEY");
+        if (!string.IsNullOrEmpty(tavilyApiKey))
+        {
+            try
+            {
+#pragma warning disable SKEXP0050 // Type is for evaluation purposes only and is subject to change or removal in future updates
+                var tavilySearch = new TavilyTextSearch(tavilyApiKey);
+                
+                var searchFunction = KernelFunctionFactory.CreateFromMethod(
+                    async (string query) => 
+                    {
+                        var searchResults = await tavilySearch.SearchAsync(query);
+                        var results = new List<string>();
+                        
+                        await foreach (var result in searchResults.Results)
+                        {
+                            results.Add(result);
+                        }
+                        
+                        return string.Join("\n\n", results);
+                    },
+                    "Search",
+                    "Search the web for information using Tavily");
+                
+                var tavilyPlugin = KernelPluginFactory.CreateFromFunctions("Tavily", "Tavily web search", [searchFunction]);
+                _functionRegistry.RegisterPlugin("Tavily", tavilyPlugin);
+#pragma warning restore SKEXP0050
+                
+                _logger.LogInformation("Tavily web search plugin registered successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to register Tavily plugin");
+            }
+        }
+        else
+        {
+            _logger.LogWarning("TAVILY_API_KEY not found. Tavily web search plugin will not be available. " +
+                             "Please set TAVILY_API_KEY environment variable to enable web search.");
+        }
     }
 } 

@@ -1,5 +1,6 @@
 .env
 .idea/
+env_setup.sh
 
 # Build results
 [Dd]ebug/

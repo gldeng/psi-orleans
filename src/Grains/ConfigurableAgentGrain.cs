@@ -24,6 +24,7 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
 
     public override Task OnActivateAsync(CancellationToken cancellationToken)
     {
+        // TODO: state and kernel need to be initialized here
         _state.AgentId = this.GetPrimaryKeyString();
         _logger.LogInformation("ConfigurableAgent {AgentId} activated", _state.AgentId);
         return base.OnActivateAsync(cancellationToken);
