@@ -14,10 +14,10 @@ class Program
 {
     static async Task Main(string[] args)
     {
-        Console.WriteLine("🌌 HyperEcho Orleans + Semantic Kernel React Agent");
-        Console.WriteLine("==================================================");
+        Console.WriteLine("🌌 HyperEcho Orleans + Semantic Kernel Configurable Agents");
+        Console.WriteLine("==========================================================");
         Console.WriteLine("🚀 Advanced AI Agent with distributed state management");
-        Console.WriteLine("🔧 Now with Configurable Agents - Initialize with Custom Prompts & Tools");
+        Console.WriteLine("🔧 Configurable Agents - Initialize with Custom Prompts & Tools");
         Console.WriteLine();
 
         // Check for OpenAI API key
@@ -99,298 +99,24 @@ class Program
             })
             .UseConsoleLifetime();
 
-    static async Task TestEnhancedReactAgent(IClusterClient client)
-    {
-        Console.WriteLine("🤖 Testing Enhanced React Agent with Real OpenAI Integration - Mathematical Operations");
-        Console.WriteLine("===================================================================================");
-
-        // Create an agent instance
-        var agentId = "math-agent-001";
-        var agent = client.GetGrain<IAgentGrain>(agentId);
-
-        // Reset the agent to ensure clean state
-        await agent.ResetAsync();
-
-        // Define the test task
-        var testTask = "Calculate the following complex mathematical expression: Find the factorial of 8, then calculate 2^10, generate the first 12 fibonacci numbers and sum them, find all prime numbers between 50 and 100, and finally perform this calculation: (8! + 2^10 + fibonacci_sum) / number_of_primes_found. Show all intermediate steps.";
-        Console.WriteLine($"📝 Task: {testTask}");
-        Console.WriteLine();
-
-        // Execute the task
-        Console.WriteLine("🔄 Executing task with real OpenAI GPT-4o-mini reasoning...");
-        Console.WriteLine("⏳ This may take a moment as we make real API calls...");
-        var startTime = DateTime.UtcNow;
-        
-        var result = await agent.ExecuteTaskAsync(testTask);
-        
-        var endTime = DateTime.UtcNow;
-        var duration = endTime - startTime;
-
-        Console.WriteLine($"⏱️  Total execution time: {duration.TotalSeconds:F2} seconds");
-        Console.WriteLine();
-
-        // Display detailed execution analysis
-        await DisplayDetailedExecutionAnalysis(agent);
-
-        // Display the final result
-        Console.WriteLine("🎯 Final Result:");
-        Console.WriteLine("================");
-        Console.WriteLine(result);
-        Console.WriteLine();
-
-        // Display performance metrics
-        await DisplayPerformanceMetrics(agent);
-
-        // Display agent state summary
-        await DisplayAgentStateSummary(agent);
-    }
-
-    static async Task TestGDPAnalysisAgent(IClusterClient client)
-    {
-        Console.WriteLine("🤖 Testing Enhanced React Agent with Real OpenAI Integration - GDP Analysis");
-        Console.WriteLine("=========================================================================");
-
-        // Create an agent instance
-        var agentId = "gdp-agent-001";
-        var agent = client.GetGrain<IAgentGrain>(agentId);
-
-        // Reset the agent to ensure clean state
-        await agent.ResetAsync();
-
-        // Define the test task
-        var testTask = "find US and New York state GDP in 2024. what % of US GDP was New York state?";
-        Console.WriteLine($"📝 Task: {testTask}");
-        Console.WriteLine();
-
-        // Execute the task
-        Console.WriteLine("🔄 Executing task with real OpenAI GPT-4o-mini reasoning...");
-        Console.WriteLine("⏳ This may take a moment as we make real API calls...");
-        var startTime = DateTime.UtcNow;
-        
-        var result = await agent.ExecuteTaskAsync(testTask);
-        
-        var endTime = DateTime.UtcNow;
-        var duration = endTime - startTime;
-
-        Console.WriteLine($"⏱️  Total execution time: {duration.TotalSeconds:F2} seconds");
-        Console.WriteLine();
-
-        // Display detailed execution analysis
-        await DisplayDetailedExecutionAnalysis(agent);
-
-        // Display the final result
-        Console.WriteLine("🎯 Final Result:");
-        Console.WriteLine("================");
-        Console.WriteLine(result);
-        Console.WriteLine();
-
-        // Display performance metrics
-        await DisplayPerformanceMetrics(agent);
-
-        // Display agent state summary for GDP
-        await DisplayGDPAgentStateSummary(agent);
-    }
-
-    static async Task DisplayDetailedExecutionAnalysis(IAgentGrain agent)
-    {
-        Console.WriteLine("🧠 Real AI-Powered Execution Analysis:");
-        Console.WriteLine("======================================");
-
-        var executionHistory = await agent.GetExecutionHistoryAsync();
-        
-        foreach (var step in executionHistory)
-        {
-            var icon = step.Type switch
-            {
-                StepType.Thought => "💭",
-                StepType.Planning => "📋",
-                StepType.Action => "⚡",
-                StepType.Observation => "👁️",
-                StepType.FinalAnswer => "🎯",
-                _ => "❓"
-            };
-
-            var statusIcon = step.IsSuccess ? "✅" : "❌";
-
-            Console.WriteLine($"{icon} {statusIcon} Step {step.StepNumber} ({step.Type}):");
-            Console.WriteLine($"   📄 Content: {step.Content}");
-            
-            if (!string.IsNullOrEmpty(step.PluginName))
-            {
-                Console.WriteLine($"   🔌 Plugin: {step.PluginName}");
-            }
-            
-            if (!string.IsNullOrEmpty(step.FunctionName))
-            {
-                Console.WriteLine($"   ⚙️  Function: {step.FunctionName}");
-            }
-            
-            if (step.Parameters.Any())
-            {
-                Console.WriteLine($"   📥 Parameters: {string.Join(", ", step.Parameters.Select(p => $"{p.Key}={p.Value}"))}");
-            }
-            
-            if (!string.IsNullOrEmpty(step.Result))
-            {
-                var truncatedResult = step.Result.Length > 150 
-                    ? step.Result[..150] + "..." 
-                    : step.Result;
-                Console.WriteLine($"   📤 Result: {truncatedResult}");
-            }
-
-            if (!string.IsNullOrEmpty(step.ErrorMessage))
-            {
-                Console.WriteLine($"   ⚠️  Error: {step.ErrorMessage}");
-            }
-            
-            Console.WriteLine($"   🕐 Timestamp: {step.Timestamp:HH:mm:ss.fff}");
-            Console.WriteLine();
-        }
-    }
-
-    static async Task DisplayPerformanceMetrics(IAgentGrain agent)
-    {
-        Console.WriteLine("📊 Performance Metrics:");
-        Console.WriteLine("======================");
-
-        var metrics = await agent.GetMetricsAsync();
-        
-        Console.WriteLine($"Total Steps: {metrics.TotalSteps}");
-        Console.WriteLine($"Successful Steps: {metrics.SuccessfulSteps}");
-        Console.WriteLine($"Failed Steps: {metrics.FailedSteps}");
-        Console.WriteLine($"Success Rate: {(metrics.TotalSteps > 0 ? (double)metrics.SuccessfulSteps / metrics.TotalSteps * 100 : 0):F1}%");
-        Console.WriteLine($"Execution Time: {metrics.ExecutionTime.TotalMilliseconds:F0}ms");
-        Console.WriteLine($"Average Step Time: {(metrics.TotalSteps > 0 ? metrics.ExecutionTime.TotalMilliseconds / metrics.TotalSteps : 0):F0}ms");
-        Console.WriteLine();
-    }
-
-    static async Task DisplayAgentStateSummary(IAgentGrain agent)
-    {
-        Console.WriteLine("🔍 Agent State Summary:");
-        Console.WriteLine("=======================");
-
-        var state = await agent.GetStateAsync();
-        
-        Console.WriteLine($"Agent ID: {state.AgentId}");
-        Console.WriteLine($"Task: {state.CurrentTask}");
-        Console.WriteLine($"Status: {(state.IsTaskCompleted ? "✅ Completed" : "⏳ In Progress")}");
-        Console.WriteLine($"Current Step: {state.CurrentStepNumber}/{state.MaxSteps}");
-        Console.WriteLine($"Working Memory Items: {state.WorkingMemory.Count}");
-        Console.WriteLine($"Long-term Memory Items: {state.LongTermMemory.Count}");
-        Console.WriteLine($"Created: {state.CreatedAt:yyyy-MM-dd HH:mm:ss}");
-        Console.WriteLine($"Last Updated: {state.LastUpdated:yyyy-MM-dd HH:mm:ss}");
-        
-        if (state.TaskStartedAt.HasValue)
-        {
-            Console.WriteLine($"Task Started: {state.TaskStartedAt:yyyy-MM-dd HH:mm:ss}");
-        }
-        
-        if (state.TaskCompletedAt.HasValue)
-        {
-            Console.WriteLine($"Task Completed: {state.TaskCompletedAt:yyyy-MM-dd HH:mm:ss}");
-        }
-
-        if (state.WorkingMemory.Any())
-        {
-            Console.WriteLine("\n🧠 Working Memory:");
-            foreach (var item in state.WorkingMemory.Take(3)) // Show first 3 items
-            {
-                var value = item.Value.ToString();
-                var truncatedValue = value?.Length > 100 ? value[..100] + "..." : value;
-                Console.WriteLine($"  • {item.Key}: {truncatedValue}");
-            }
-            
-            if (state.WorkingMemory.Count > 3)
-            {
-                Console.WriteLine($"  ... and {state.WorkingMemory.Count - 3} more items");
-            }
-        }
-
-        Console.WriteLine("\n🌟 Real AI Integration Benefits Demonstrated:");
-        Console.WriteLine("• OpenAI GPT-4o-mini: Real AI reasoning and mathematical decision making");
-        Console.WriteLine("• Orleans: Distributed state management and fault tolerance");
-        Console.WriteLine("• Semantic Kernel: Enterprise-grade AI integration with mathematical plugins");
-        Console.WriteLine("• React Pattern: Structured AI thought → action → observation loop for complex calculations");
-        Console.WriteLine("• Mathematical Operations: Comprehensive integer mathematics with factorial, prime, fibonacci, and more");
-        Console.WriteLine("• Cost Efficiency: Using GPT-4o-mini for optimal cost/performance ratio");
-        Console.WriteLine("• Production Ready: Real API integration with proper error handling");
-    }
-
-    static async Task DisplayGDPAgentStateSummary(IAgentGrain agent)
-    {
-        Console.WriteLine("🔍 Agent State Summary:");
-        Console.WriteLine("=======================");
-
-        var state = await agent.GetStateAsync();
-        
-        Console.WriteLine($"Agent ID: {state.AgentId}");
-        Console.WriteLine($"Task: {state.CurrentTask}");
-        Console.WriteLine($"Status: {(state.IsTaskCompleted ? "✅ Completed" : "⏳ In Progress")}");
-        Console.WriteLine($"Current Step: {state.CurrentStepNumber}/{state.MaxSteps}");
-        Console.WriteLine($"Working Memory Items: {state.WorkingMemory.Count}");
-        Console.WriteLine($"Long-term Memory Items: {state.LongTermMemory.Count}");
-        Console.WriteLine($"Created: {state.CreatedAt:yyyy-MM-dd HH:mm:ss}");
-        Console.WriteLine($"Last Updated: {state.LastUpdated:yyyy-MM-dd HH:mm:ss}");
-        
-        if (state.TaskStartedAt.HasValue)
-        {
-            Console.WriteLine($"Task Started: {state.TaskStartedAt:yyyy-MM-dd HH:mm:ss}");
-        }
-        
-        if (state.TaskCompletedAt.HasValue)
-        {
-            Console.WriteLine($"Task Completed: {state.TaskCompletedAt:yyyy-MM-dd HH:mm:ss}");
-        }
-
-        if (state.WorkingMemory.Any())
-        {
-            Console.WriteLine("\n🧠 Working Memory:");
-            foreach (var item in state.WorkingMemory.Take(3)) // Show first 3 items
-            {
-                var value = item.Value.ToString();
-                var truncatedValue = value?.Length > 100 ? value[..100] + "..." : value;
-                Console.WriteLine($"  • {item.Key}: {truncatedValue}");
-            }
-            
-            if (state.WorkingMemory.Count > 3)
-            {
-                Console.WriteLine($"  ... and {state.WorkingMemory.Count - 3} more items");
-            }
-        }
-
-        Console.WriteLine("\n🌟 Real AI Integration Benefits Demonstrated:");
-        Console.WriteLine("• OpenAI GPT-4o-mini: Real AI reasoning and GDP analysis");
-        Console.WriteLine("• Orleans: Distributed state management and fault tolerance");
-        Console.WriteLine("• Semantic Kernel: Enterprise-grade AI integration with GDP analysis plugins");
-        Console.WriteLine("• React Pattern: Structured AI thought → action → observation loop for GDP analysis");
-        Console.WriteLine("• GDP Analysis: Comprehensive economic analysis with GDP growth and percentage calculations");
-        Console.WriteLine("• Cost Efficiency: Using GPT-4o-mini for optimal cost/performance ratio");
-        Console.WriteLine("• Production Ready: Real API integration with proper error handling");
-    }
-
     static async Task PresentTestCaseMenu(IClusterClient client)
     {
         while (true)
         {
-            Console.WriteLine("🤖 HyperEcho Agent Test Menu");
-            Console.WriteLine("===========================");
-            Console.WriteLine("📋 Standard React Agents:");
-            Console.WriteLine("  1. Test Enhanced React Agent with Mathematical Operations");
-            Console.WriteLine("  2. Test Enhanced React Agent with GDP Analysis");
-            Console.WriteLine("  3. Test Persistent Chat History Conversation");
+            Console.WriteLine("🤖 HyperEcho Configurable Agent Menu");
+            Console.WriteLine("====================================");
+            Console.WriteLine("🔧 Configurable Agents:");
+            Console.WriteLine("  1. Data Analyst Agent (Custom Math Tools)");
+            Console.WriteLine("  2. Creative Writing Agent (Text Processing Tools)");
+            Console.WriteLine("  3. Research Agent (Mathematical Plugin)");
+            Console.WriteLine("  4. Customer Service Agent (Support Tools)");
+            Console.WriteLine("  5. Conversation Agent (Continuity Demo)");
+            Console.WriteLine("  6. Hybrid Agent (Functions + Plugins)");
+            Console.WriteLine("  7. View All Agent Metrics");
+            Console.WriteLine("  8. Show Available Functions from Registry");
             Console.WriteLine();
-            Console.WriteLine("🔧 Configurable Agents (New!):");
-            Console.WriteLine("  4. Data Analyst Agent (Custom Math Tools)");
-            Console.WriteLine("  5. Creative Writing Agent (Text Processing Tools)");
-            Console.WriteLine("  6. Research Agent (Mathematical Plugin)");
-            Console.WriteLine("  7. Customer Service Agent (Support Tools)");
-            Console.WriteLine("  8. Conversation Agent (Continuity Demo)");
-            Console.WriteLine("  9. Hybrid Agent (Functions + Plugins)");
-            Console.WriteLine("  10. View All Agent Metrics");
-            Console.WriteLine("  11. Show Available Functions from Registry");
-            Console.WriteLine();
-            Console.WriteLine("🚀 NEW: Unified Tool Naming:");
-            Console.WriteLine("  12. Unified Tool Naming Example (RECOMMENDED)");
+            Console.WriteLine("🚀 RECOMMENDED:");
+            Console.WriteLine("  9. Unified Tool Naming Example");
             Console.WriteLine();
             Console.WriteLine("  0. Exit");
             Console.WriteLine();
@@ -398,52 +124,42 @@ class Program
             Console.Write("Enter your choice: ");
             var choice = Console.ReadLine();
 
-            // var choice = "11";
             try
             {
                 switch (choice)
                 {
                     case "1":
-                        await TestEnhancedReactAgent(client);
-                        break;
-                    case "2":
-                        await TestGDPAnalysisAgent(client);
-                        break;
-                    case "3":
-                        await TestPersistentChatHistory(client);
-                        break;
-                    case "4":
                         await TestDataAnalystAgent(client);
                         break;
-                    case "5":
+                    case "2":
                         await TestCreativeWritingAgent(client);
                         break;
-                    case "6":
+                    case "3":
                         await TestResearchAgent(client);
                         break;
-                    case "7":
+                    case "4":
                         await TestCustomerServiceAgent(client);
                         break;
-                    case "8":
+                    case "5":
                         await TestConversationAgent(client);
                         break;
-                    case "9":
+                    case "6":
                         await TestHybridAgent(client);
                         break;
-                    case "10":
+                    case "7":
                         await ViewAllAgentMetrics(client);
                         break;
-                    case "11":
+                    case "8":
                         await ShowAvailableFunctions(client);
                         break;
-                    case "12":
+                    case "9":
                         await TestUnifiedToolNamingExample(client);
                         break;
                     case "0":
                         Console.WriteLine("👋 Exiting HyperEcho Agent System. Goodbye!");
                         return;
                     default:
-                        Console.WriteLine("❌ Invalid choice. Please enter a valid option (0-12).");
+                        Console.WriteLine("❌ Invalid choice. Please enter a valid option (0-9).");
                         break;
                 }
             }
@@ -459,138 +175,7 @@ class Program
         }
     }
 
-    static async Task TestPersistentChatHistory(IClusterClient client)
-    {
-        Console.WriteLine("🤖 Testing Persistent Chat History with Orleans Grain State");
-        Console.WriteLine("==========================================================");
-
-        // Create an agent instance
-        var agentId = "chat-agent-001";
-        var agent = client.GetGrain<IAgentGrain>(agentId);
-
-        // Reset the agent to ensure clean state
-        await agent.ResetAsync();
-
-        Console.WriteLine($"📝 Starting conversation with agent: {agentId}");
-        Console.WriteLine();
-
-        // First interaction
-        Console.WriteLine("🔄 First interaction - Initial task");
-        var firstTask = "Hello! I'm working on a math project. Can you help me calculate the factorial of 5?";
-        Console.WriteLine($"User: {firstTask}");
-        
-        var firstResponse = await agent.ExecuteTaskAsync(firstTask);
-        Console.WriteLine($"Assistant: {firstResponse}");
-        Console.WriteLine();
-
-        // Show chat history count
-        var historyCount = await agent.GetChatHistoryCountAsync();
-        Console.WriteLine($"💬 Chat history now contains {historyCount} messages");
-        Console.WriteLine();
-
-        // Second interaction - continuing the conversation
-        Console.WriteLine("🔄 Second interaction - Continuing conversation");
-        var secondMessage = "Great! Now can you also calculate 2^8 and tell me which is larger?";
-        Console.WriteLine($"User: {secondMessage}");
-        
-        var secondResponse = await agent.ContinueConversationAsync(secondMessage);
-        Console.WriteLine($"Assistant: {secondResponse}");
-        Console.WriteLine();
-
-        // Show updated chat history count
-        historyCount = await agent.GetChatHistoryCountAsync();
-        Console.WriteLine($"💬 Chat history now contains {historyCount} messages");
-        Console.WriteLine();
-
-        // Third interaction - referencing previous context
-        Console.WriteLine("🔄 Third interaction - Referencing previous context");
-        var thirdMessage = "Can you remind me what the factorial result was from our first calculation?";
-        Console.WriteLine($"User: {thirdMessage}");
-        
-        var thirdResponse = await agent.ContinueConversationAsync(thirdMessage);
-        Console.WriteLine($"Assistant: {thirdResponse}");
-        Console.WriteLine();
-
-        // Display full chat history
-        Console.WriteLine("📜 Complete Chat History:");
-        Console.WriteLine("=========================");
-        var chatHistory = await agent.GetChatHistoryAsync();
-        
-        foreach (var message in chatHistory)
-        {
-            var icon = message.Role switch
-            {
-                "system" => "🤖",
-                "user" => "👤",
-                "assistant" => "🤖",
-                _ => "❓"
-            };
-            
-            var truncatedContent = message.Content.Length > 100 
-                ? message.Content[..100] + "..." 
-                : message.Content;
-                
-            Console.WriteLine($"{icon} {message.Role.ToUpper()}: {truncatedContent}");
-            Console.WriteLine($"   🕐 {message.Timestamp:HH:mm:ss}");
-            Console.WriteLine();
-        }
-
-        // Display agent state summary
-        await DisplayChatAgentStateSummary(agent);
-
-        // Test grain persistence by simulating reactivation
-        Console.WriteLine("🔄 Testing grain persistence...");
-        Console.WriteLine("Creating new grain reference (simulating reactivation)");
-        
-        var newAgentReference = client.GetGrain<IAgentGrain>(agentId);
-        var persistedHistoryCount = await newAgentReference.GetChatHistoryCountAsync();
-        
-        Console.WriteLine($"✅ Persisted chat history contains {persistedHistoryCount} messages");
-        Console.WriteLine("🌟 Chat history successfully persisted in Orleans grain state!");
-    }
-
-    static async Task DisplayChatAgentStateSummary(IAgentGrain agent)
-    {
-        Console.WriteLine("🔍 Agent State Summary:");
-        Console.WriteLine("=======================");
-
-        var state = await agent.GetStateAsync();
-        var historyCount = await agent.GetChatHistoryCountAsync();
-        
-        Console.WriteLine($"Agent ID: {state.AgentId}");
-        Console.WriteLine($"Chat History Messages: {historyCount}");
-        Console.WriteLine($"Working Memory Items: {state.WorkingMemory.Count}");
-        Console.WriteLine($"Long-term Memory Items: {state.LongTermMemory.Count}");
-        Console.WriteLine($"Created: {state.CreatedAt:yyyy-MM-dd HH:mm:ss}");
-        Console.WriteLine($"Last Updated: {state.LastUpdated:yyyy-MM-dd HH:mm:ss}");
-
-        if (state.WorkingMemory.Any())
-        {
-            Console.WriteLine("\n🧠 Working Memory:");
-            foreach (var item in state.WorkingMemory.Take(3)) // Show first 3 items
-            {
-                var value = item.Value.ToString();
-                var truncatedValue = value?.Length > 100 ? value[..100] + "..." : value;
-                Console.WriteLine($"  • {item.Key}: {truncatedValue}");
-            }
-            
-            if (state.WorkingMemory.Count > 3)
-            {
-                Console.WriteLine($"  ... and {state.WorkingMemory.Count - 3} more items");
-            }
-        }
-
-        Console.WriteLine("\n🌟 Persistent Chat History Benefits Demonstrated:");
-        Console.WriteLine("• Orleans Grain State: Chat history persisted across grain activations");
-        Console.WriteLine("• Conversation Context: AI maintains context from previous interactions");
-        Console.WriteLine("• Semantic Kernel Integration: Seamless ChatHistory serialization");
-        Console.WriteLine("• Distributed State: Chat history available across cluster nodes");
-        Console.WriteLine("• Memory Efficiency: Structured storage with Orleans serialization");
-        Console.WriteLine("• Production Ready: Fault-tolerant conversation state management");
-        Console.WriteLine();
-    }
-
-    // New configurable agent test methods
+    // Configurable agent test methods
     static async Task TestDataAnalystAgent(IClusterClient client)
     {
         Console.WriteLine("🔢 Testing Configurable Data Analyst Agent");
