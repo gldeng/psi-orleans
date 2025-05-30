@@ -1,0 +1,8 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Run the program every time after you makes changes.
+
+Remember to use [env_setup.sh](mdc:env_setup.sh) to set the environment variables before running `dotnet run`.

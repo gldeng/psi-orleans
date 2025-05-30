@@ -1,6 +1,7 @@
 using Orleans;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
+using Microsoft.Extensions.DependencyInjection;
 using PsiOrleans.Models;
 using PsiOrleans.Services;
 
@@ -24,7 +25,6 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
 
     public override Task OnActivateAsync(CancellationToken cancellationToken)
     {
-        // TODO: state and kernel need to be initialized here
         _state.AgentId = this.GetPrimaryKeyString();
         _logger.LogInformation("ConfigurableAgent {AgentId} activated", _state.AgentId);
         return base.OnActivateAsync(cancellationToken);
@@ -307,9 +307,9 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
         }
     }
 
-    private async Task<List<KernelFunctionMetadata>> GetFunctionMetadata(Kernel kernel)
+    private async Task<List<AgentFunctionInfo>> GetFunctionMetadata(Kernel kernel)
     {
-        var metadata = new List<KernelFunctionMetadata>();
+        var metadata = new List<AgentFunctionInfo>();
         
         try
         {
@@ -317,7 +317,12 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
             {
                 foreach (var function in plugin)
                 {
-                    metadata.Add(function.Metadata);
+                    var isAgentComm = plugin.Name == "AgentCommunication" || function.Name.StartsWith("Call_");
+                    var functionInfo = AgentFunctionInfo.FromKernelFunctionMetadata(
+                        function.Metadata, 
+                        plugin.Name, 
+                        isAgentComm);
+                    metadata.Add(functionInfo);
                 }
             }
         }
@@ -327,5 +332,296 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
         }
 
         return metadata;
+    }
+    
+    // New methods for callable agent management
+    
+    public async Task<(bool Success, string Message)> SetCallableAgentsAsync(IEnumerable<CallableAgent> callableAgents)
+    {
+        try
+        {
+            var agentList = callableAgents.ToList();
+            
+            _logger.LogInformation("Setting callable agents for {AgentId}: {AgentInfo}", 
+                _state.AgentId, 
+                string.Join(", ", agentList.Select(a => $"{a.Name} ({a.Id})")));
+            
+            // Update the state
+            _state.CallableAgents = agentList;
+            _state.LastUpdated = DateTime.UtcNow;
+            
+            // Initialize agent function registry if not already done
+            if (_state.AgentFunctionRegistry == null)
+            {
+                var logger = ServiceProvider.GetRequiredService<ILogger<AgentFunctionRegistry>>();
+                _state.AgentFunctionRegistry = new AgentFunctionRegistry(logger);
+            }
+            
+            // Clear existing agent functions
+            _state.AgentFunctionRegistry.ClearAgentFunctions();
+            
+            // Create agent communication functions for each callable agent
+            await CreateAgentCommunicationFunctions(agentList);
+            
+            // IMPORTANT: Refresh the kernel to include new agent communication functions
+            await RefreshKernelWithAgentFunctions();
+            
+            _logger.LogInformation("Successfully set {Count} callable agents for {AgentId}", agentList.Count, _state.AgentId);
+            
+            return (true, $"Successfully set {agentList.Count} callable agents: {string.Join(", ", agentList.Select(a => a.Name))}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error setting callable agents for {AgentId}", _state.AgentId);
+            return (false, $"Failed to set callable agents: {ex.Message}");
+        }
+    }
+    
+    public Task<List<CallableAgent>> GetCallableAgentsAsync()
+    {
+        return Task.FromResult(_state.CallableAgents.ToList());
+    }
+    
+    public async Task<(bool Success, string Message)> AddCallableAgentAsync(CallableAgent callableAgent)
+    {
+        try
+        {
+            if (callableAgent == null)
+            {
+                return (false, "Callable agent cannot be null");
+            }
+            
+            if (string.IsNullOrWhiteSpace(callableAgent.Id))
+            {
+                return (false, "Agent ID cannot be null or empty");
+            }
+            
+            if (_state.CallableAgents.Any(a => a.Id == callableAgent.Id))
+            {
+                return (false, $"Agent {callableAgent.Id} is already in the callable agents list");
+            }
+            
+            _state.CallableAgents.Add(callableAgent);
+            _state.LastUpdated = DateTime.UtcNow;
+            
+            // Initialize agent function registry if needed
+            if (_state.AgentFunctionRegistry == null)
+            {
+                var logger = ServiceProvider.GetRequiredService<ILogger<AgentFunctionRegistry>>();
+                _state.AgentFunctionRegistry = new AgentFunctionRegistry(logger);
+            }
+            
+            // Create communication function for this agent
+            await CreateAgentCommunicationFunction(callableAgent);
+            
+            // Refresh kernel to include the new agent function
+            await RefreshKernelWithAgentFunctions();
+            
+            _logger.LogInformation("Added callable agent {AgentName} ({AgentId}) to {OwnerAgentId}", 
+                callableAgent.Name, callableAgent.Id, _state.AgentId);
+            
+            return (true, $"Successfully added callable agent: {callableAgent.Name} ({callableAgent.Id})");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error adding callable agent {AgentId} to {OwnerAgentId}", callableAgent?.Id, _state.AgentId);
+            return (false, $"Failed to add callable agent: {ex.Message}");
+        }
+    }
+    
+    public async Task<(bool Success, string Message)> RemoveCallableAgentAsync(string agentId)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(agentId))
+            {
+                return (false, "Agent ID cannot be null or empty");
+            }
+            
+            var agentToRemove = _state.CallableAgents.FirstOrDefault(a => a.Id == agentId);
+            if (agentToRemove == null)
+            {
+                return (false, $"Agent {agentId} is not in the callable agents list");
+            }
+            
+            _state.CallableAgents.Remove(agentToRemove);
+            _state.LastUpdated = DateTime.UtcNow;
+            
+            // Remove the agent communication function
+            var functionName = agentToRemove.GetFunctionName();
+            _state.AgentFunctionRegistry?.RemoveAgentFunction(functionName);
+            
+            // Refresh kernel to remove the agent function
+            await RefreshKernelWithAgentFunctions();
+            
+            _logger.LogInformation("Removed callable agent {AgentName} ({AgentId}) from {OwnerAgentId}", 
+                agentToRemove.Name, agentId, _state.AgentId);
+            
+            return (true, $"Successfully removed callable agent: {agentToRemove.Name} ({agentId})");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error removing callable agent {AgentId} from {OwnerAgentId}", agentId, _state.AgentId);
+            return (false, $"Failed to remove callable agent: {ex.Message}");
+        }
+    }
+    
+    public Task<List<string>> GetAvailableAgentFunctionNamesAsync()
+    {
+        var functionNames = _state.AgentFunctionRegistry?.GetAvailableAgentFunctionNames().ToList() ?? new List<string>();
+        return Task.FromResult(functionNames);
+    }
+    
+    public Task<bool> CanCallAgentAsync(string agentId)
+    {
+        return Task.FromResult(_state.CallableAgents.Any(a => a.Id == agentId));
+    }
+    
+    private async Task CreateAgentCommunicationFunctions(IEnumerable<CallableAgent> callableAgents)
+    {
+        foreach (var agent in callableAgents)
+        {
+            await CreateAgentCommunicationFunction(agent);
+        }
+    }
+    
+    private Task CreateAgentCommunicationFunction(CallableAgent callableAgent)
+    {
+        try
+        {
+            // Use the agent's GetFunctionName method for consistency
+            var functionName = callableAgent.GetFunctionName();
+            
+            // Create a kernel function that delegates to the target agent
+            var agentCallFunction = KernelFunctionFactory.CreateFromMethod(
+                async (string query) => await CallAgentDirectly(callableAgent.Id, query),
+                functionName,
+                $"Call '{callableAgent.Name}' agent: {callableAgent.Description}");
+            
+            _state.AgentFunctionRegistry?.RegisterAgentFunction(functionName, agentCallFunction);
+            
+            _logger.LogDebug("Created agent communication function: {FunctionName} for {AgentName} ({AgentId})", 
+                functionName, callableAgent.Name, callableAgent.Id);
+            
+            return Task.CompletedTask;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating agent communication function for {AgentName} ({AgentId})", 
+                callableAgent.Name, callableAgent.Id);
+            return Task.CompletedTask;
+        }
+    }
+    private async Task<string> CallAgentDirectly(string agentId, string query)
+    {
+        try
+        {
+            var targetAgent = GrainFactory.GetGrain<IConfigurableAgentGrain>(agentId);
+        
+            // Check if the target agent is initialized
+            var isInitialized = await targetAgent.IsInitializedAsync();
+            if (!isInitialized)
+            {
+                return $"Error: Agent {agentId} is not initialized";
+            }
+        
+            // Execute the task on the target agent
+            return await targetAgent.ExecuteTaskAsync(query);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error calling agent {AgentId} from {OwnerAgentId}", agentId, _state.AgentId);
+            return $"Error calling agent {agentId}: {ex.Message}";
+        }
+    }
+    private async Task<string> CallAgentDirectly_Backup(string agentId, string query)
+    {
+        try
+        {
+
+            // Use the grain's task scheduler to ensure proper Orleans context
+            var result = await Task.Factory.StartNew(async () =>
+            {
+                var targetAgent = GrainFactory.GetGrain<IConfigurableAgentGrain>(agentId);
+                
+                // Check if the target agent is initialized
+                var isInitialized = await targetAgent.IsInitializedAsync();
+                if (!isInitialized)
+                {
+                    return $"Error: Agent {agentId} is not initialized";
+                }
+                
+                // Execute the task on the target agent
+                return await targetAgent.ExecuteTaskAsync(query);
+            }, 
+            CancellationToken.None, 
+            TaskCreationOptions.None, 
+            TaskScheduler.Current).Unwrap();
+            
+            _logger.LogInformation("Successfully called agent {AgentId} from {OwnerAgentId}", agentId, _state.AgentId);
+            
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error calling agent {AgentId} from {OwnerAgentId}", agentId, _state.AgentId);
+            return $"Error calling agent {agentId}: {ex.Message}";
+        }
+    }
+
+    private async Task RefreshKernelWithAgentFunctions()
+    {
+        try
+        {
+            _logger.LogInformation("Refreshing kernel for {AgentId} to include new agent communication functions", _state.AgentId);
+
+            if (_state.Configuration == null)
+            {
+                _logger.LogWarning("Cannot refresh kernel: agent configuration is null");
+                return;
+            }
+
+            // Get only the original tool names (exclude agent communication functions)
+            // Agent communication functions have the pattern "Call_*" so we filter them out
+            var originalToolNames = _state.AvailableFunctions
+                .Where(f => !f.IsAgentCommunicationFunction && !f.Name.StartsWith("Call_"))
+                .Select(f => f.Name)
+                .ToList();
+            
+            _logger.LogInformation("Recreating kernel with {OriginalCount} original tools", originalToolNames.Count);
+
+            // Recreate the kernel with only the original tools (that the service knows about)
+            _kernel = await _kernelService.CreateKernelAsync(_state.Configuration, originalToolNames);
+
+            // Add agent communication functions as a separate plugin if they exist
+            if (_state.AgentFunctionRegistry != null && _state.AgentFunctionRegistry.GetAgentFunctionCount() > 0)
+            {
+                var agentFunctions = _state.AgentFunctionRegistry.GetAllAgentFunctions().Values.ToList();
+                
+                if (agentFunctions.Any())
+                {
+                    // Create a plugin from the agent communication functions
+                    var agentCommunicationPlugin = KernelPluginFactory.CreateFromFunctions(
+                        "AgentCommunication", 
+                        "Functions for calling other agents",
+                        agentFunctions);
+                    
+                    // Add the plugin to the kernel
+                    _kernel.Plugins.Add(agentCommunicationPlugin);
+                    
+                    _logger.LogInformation("Added {AgentFunctionCount} agent communication functions to kernel", agentFunctions.Count);
+                }
+            }
+
+            // Update available functions metadata to include the new functions
+            _state.AvailableFunctions = await GetFunctionMetadata(_kernel);
+
+            _logger.LogInformation("Kernel for {AgentId} refreshed successfully with {TotalCount} total functions", 
+                _state.AgentId, _state.AvailableFunctions.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error refreshing kernel for ConfigurableAgent {AgentId}", _state.AgentId);
+        }
     }
 } 

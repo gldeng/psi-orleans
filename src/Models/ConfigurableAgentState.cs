@@ -1,5 +1,6 @@
 using Microsoft.SemanticKernel;
 using Orleans;
+using PsiOrleans.Services;
 
 namespace PsiOrleans.Models;
 
@@ -56,7 +57,7 @@ public class ConfigurableAgentState : AgentState
     /// Available kernel functions for this agent instance
     /// </summary>
     [Id(25)]
-    public List<KernelFunctionMetadata> AvailableFunctions { get; set; } = new();
+    public List<AgentFunctionInfo> AvailableFunctions { get; set; } = new();
     
     /// <summary>
     /// Custom metadata for the agent
@@ -64,6 +65,26 @@ public class ConfigurableAgentState : AgentState
     [Id(26)]
     public Dictionary<string, object> CustomMetadata { get; set; } = new();
     
+    /// <summary>
+    /// List of agents that this agent can call, with names and descriptions
+    /// </summary>
+    [Id(27)]
+    public List<CallableAgent> CallableAgents { get; set; } = new();
+    
+    // Non-serialized field for agent function registry
+    [NonSerialized]
+    private IAgentFunctionRegistry? _agentFunctionRegistry;
+    
+    /// <summary>
+    /// Registry of functions that enable calling other agents
+    /// Note: This is not serialized directly, but recreated from CallableAgents during initialization
+    /// </summary>
+    public IAgentFunctionRegistry? AgentFunctionRegistry 
+    { 
+        get => _agentFunctionRegistry;
+        set => _agentFunctionRegistry = value;
+    }
+
     /// <summary>
     /// Increment successful task counter
     /// </summary>

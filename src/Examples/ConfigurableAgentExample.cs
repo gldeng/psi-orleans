@@ -608,4 +608,198 @@ public class ConfigurableAgentExample
             return $"❌ Error in Multi-Agent GDP Analysis: {ex.Message}";
         }
     }
+
+    /// <summary>
+    /// Enhanced Multi-Agent GDP Analysis: Demonstrates callable agents stored in agent state
+    /// Agent A (Orchestrator) maintains its own list of callable agents and function registry
+    /// Use case: "find US and New York state GDP in 2024. what % of US GDP was New York state?"
+    /// </summary>
+    public async Task<string> RunEnhancedMultiAgentGdpAnalysisAsync()
+    {
+        _logger.LogInformation("🌍 Starting Enhanced Multi-Agent GDP Analysis with Callable Agents");
+        
+        var results = new List<string>();
+        results.Add("🚀 Enhanced Multi-Agent GDP Analysis System");
+        results.Add("==========================================");
+        results.Add("Task: Find US and NY State GDP in 2024, calculate NY's percentage of US GDP");
+        results.Add("Enhancement: Agent A maintains its own callable agents list and function registry");
+        results.Add("");
+
+        try
+        {
+            // Step 1: Initialize Agent B (Web Search Agent) with Tavily search tools
+            results.Add("📋 Step 1: Initializing Agent B (Web Search Expert)");
+            
+            var webSearchToolNames = new List<string>
+            {
+                "Tavily.Search"
+            };
+
+            var webSearchConfig = new AgentConfiguration
+            {
+                SystemPrompt = @"You are Agent B, a Web Search Expert specializing in economic data gathering.
+                               Your role is to search for and retrieve GDP data from reliable sources using web search.
+                               Use the Tavily search tool to find current and accurate GDP information.
+                               
+                               When searching for GDP data:
+                               - Search for official sources like Bureau of Economic Analysis, World Bank, IMF
+                               - Look for the most recent and reliable data available
+                               - Extract specific numeric values from your search results
+                               - Always cite your sources and provide context about the data
+                               
+                               Format your responses clearly with:
+                               - The GDP value found
+                               - The source of the information  
+                               - The year the data represents
+                               - Any relevant context about the measurement",
+                AgentName = "WebSearchExpert",
+                Temperature = 0.1,
+                MaxTokens = 2000
+            };
+
+            var webSearchAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>("web-search-agent");
+            var webSearchInit = await webSearchAgent.InitializeAsync(webSearchConfig, webSearchToolNames);
+            
+            if (!webSearchInit.Success)
+            {
+                return $"❌ Failed to initialize Agent B: {webSearchInit.Message}";
+            }
+            results.Add($"✅ Agent B initialized: {webSearchInit.Message}");
+            results.Add("");
+
+            // Step 2: Initialize Agent C (Math Agent) with existing math functions
+            results.Add("📋 Step 2: Initializing Agent C (Math Expert)");
+            var mathToolNames = new List<string>
+            {
+                "Math.Add",
+                "Math.Multiply", 
+                "Math.Divide"
+            };
+
+            var mathConfig = new AgentConfiguration
+            {
+                SystemPrompt = @"You are Agent C, a Mathematical Analysis Expert specializing in economic calculations.
+                               Your role is to perform precise mathematical operations on economic data.
+                               You can calculate percentages, perform division, addition, and analyze GDP relationships.
+                               Always show your calculations step by step and provide clear explanations.
+                               Pay special attention to decimal precision and units (trillions, billions, etc.).
+                               
+                               To calculate percentage: (part ÷ whole) × 100
+                               When working with GDP data in trillions, be careful with decimal places.",
+                AgentName = "MathExpert",
+                Temperature = 0.1,
+                MaxTokens = 2000
+            };
+
+            var mathAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>("math-agent");
+            var mathInit = await mathAgent.InitializeAsync(mathConfig, mathToolNames);
+            
+            if (!mathInit.Success)
+            {
+                return $"❌ Failed to initialize Agent C: {mathInit.Message}";
+            }
+            results.Add($"✅ Agent C initialized: {mathInit.Message}");
+            results.Add("");
+
+            // Step 3: Initialize Agent A (Orchestrator) with basic tools
+            results.Add("📋 Step 3: Initializing Agent A (Task Orchestrator)");
+            var orchestratorToolNames = new List<string>
+            {
+                "Text.CountWords",  // Some basic tools for text processing
+                "Text.ToUpperCase"
+            };
+
+            var orchestratorConfig = new AgentConfiguration
+            {
+                SystemPrompt = @"You are Agent A, the Task Orchestrator for multi-agent economic analysis.
+                               Your role is to break down complex economic analysis tasks into steps and coordinate other agents.
+                               
+                               You have access to callable agents through your agent function registry:
+                               - You can call web-search-agent for data gathering tasks
+                               - You can call math-agent for mathematical calculations
+                               
+                               For GDP analysis tasks:
+                               1. First, call the web-search-agent to gather GDP data
+                               2. Then, call the math-agent to perform calculations
+                               3. Coordinate the results into a comprehensive analysis
+                               
+                               Always explain your coordination strategy and provide clear task breakdowns.
+                               Use the agent communication functions available to you.",
+                AgentName = "TaskOrchestrator",
+                Temperature = 0.2,
+                MaxTokens = 4000
+            };
+
+            var orchestratorAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>("orchestrator-agent");
+            var orchestratorInit = await orchestratorAgent.InitializeAsync(orchestratorConfig, orchestratorToolNames);
+            
+            if (!orchestratorInit.Success)
+            {
+                return $"❌ Failed to initialize Agent A: {orchestratorInit.Message}";
+            }
+            results.Add($"✅ Agent A initialized: {orchestratorInit.Message}");
+            results.Add("");
+
+            // Step 4: Set callable agents for Agent A
+            results.Add("📋 Step 4: Setting Callable Agents for Agent A");
+            var callableAgents = new List<CallableAgent> 
+            { 
+                new CallableAgent("web-search-agent", "Web Search Agent", "Searches the web for information and answers questions using online resources"),
+                new CallableAgent("math-agent", "Math Agent", "Performs mathematical calculations and solves math problems")
+            };
+            var setCallableResult = await orchestratorAgent.SetCallableAgentsAsync(callableAgents);
+            
+            if (!setCallableResult.Success)
+            {
+                return $"❌ Failed to set callable agents: {setCallableResult.Message}";
+            }
+            results.Add($"✅ {setCallableResult.Message}");
+            
+            // Verify callable agents
+            var currentCallableAgents = await orchestratorAgent.GetCallableAgentsAsync();
+            results.Add($"📋 Current callable agents: {string.Join(", ", currentCallableAgents)}");
+            
+            var agentFunctionNames = await orchestratorAgent.GetAvailableAgentFunctionNamesAsync();
+            results.Add($"🔧 Available agent functions: {string.Join(", ", agentFunctionNames)}");
+            results.Add("");
+
+            // Step 5: Execute the GDP Analysis Task
+            results.Add("📋 Step 5: Executing GDP Analysis Task with Callable Agents");
+            var gdpAnalysisTask = @"Please coordinate a multi-agent analysis to find US and New York state GDP in 2024, 
+                                   then calculate what percentage of US GDP was New York state.
+                                   
+                                   You have access to callable agents through your agent function registry:
+                                   - Callweb-search-agent: for web search and data gathering
+                                   - Callmath-agent: for mathematical calculations
+                                   
+                                   Break this down into steps:
+                                   1. Use Callweb-search-agent to find US GDP for 2024
+                                   2. Use Callweb-search-agent to find New York State GDP for 2024  
+                                   3. Use Callmath-agent to calculate the percentage: (NY GDP ÷ US GDP) × 100
+                                   
+                                   Coordinate the entire process and provide a comprehensive analysis.";
+
+            var analysisResult = await orchestratorAgent.ExecuteTaskAsync(gdpAnalysisTask);
+            results.Add("🤖 Enhanced Multi-Agent Analysis Result:");
+            results.Add("=======================================");
+            results.Add(analysisResult);
+            results.Add("");
+
+            // Step 6: Show agent state information
+            results.Add("📊 Agent State Information:");
+            results.Add("===========================");
+            var orchestratorState = await orchestratorAgent.GetStateAsync();
+            results.Add($"🔗 Callable Agents Count: {orchestratorState.CallableAgents.Count}");
+            results.Add($"🔧 Agent Functions Count: {orchestratorState.AgentFunctionRegistry?.GetAgentFunctionCount() ?? 0}");
+            results.Add($"📈 Total Tasks Executed: {orchestratorState.TotalTasks}");
+            results.Add($"✅ Success Rate: {orchestratorState.GetSuccessRate():F1}%");
+
+            return string.Join("\n", results);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Error in Enhanced Multi-Agent GDP Analysis");
+            return $"❌ Error in Enhanced Multi-Agent GDP Analysis: {ex.Message}";
+        }
+    }
 } 

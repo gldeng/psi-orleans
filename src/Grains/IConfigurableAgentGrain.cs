@@ -111,4 +111,47 @@ public interface IConfigurableAgentGrain : IGrainWithStringKey
     /// </summary>
     /// <returns>List of all available tool names</returns>
     Task<List<string>> GetAllAvailableToolNamesAsync();
+    
+    // New methods for callable agent management
+    
+    /// <summary>
+    /// Set the list of agents that this agent can call
+    /// This will create agent communication functions for each callable agent
+    /// </summary>
+    /// <param name="callableAgents">List of callable agents with names and descriptions</param>
+    /// <returns>Success status and message</returns>
+    Task<(bool Success, string Message)> SetCallableAgentsAsync(IEnumerable<CallableAgent> callableAgents);
+    
+    /// <summary>
+    /// Get the list of agents that this agent can call
+    /// </summary>
+    /// <returns>List of callable agents with names and descriptions</returns>
+    Task<List<CallableAgent>> GetCallableAgentsAsync();
+    
+    /// <summary>
+    /// Add a single agent to the callable agents list
+    /// </summary>
+    /// <param name="callableAgent">Callable agent with name and description</param>
+    /// <returns>Success status and message</returns>
+    Task<(bool Success, string Message)> AddCallableAgentAsync(CallableAgent callableAgent);
+    
+    /// <summary>
+    /// Remove a single agent from the callable agents list
+    /// </summary>
+    /// <param name="agentId">Agent ID to remove</param>
+    /// <returns>Success status and message</returns>
+    Task<(bool Success, string Message)> RemoveCallableAgentAsync(string agentId);
+    
+    /// <summary>
+    /// Get the names of available agent communication functions
+    /// </summary>
+    /// <returns>List of agent function names</returns>
+    Task<List<string>> GetAvailableAgentFunctionNamesAsync();
+    
+    /// <summary>
+    /// Check if this agent can call a specific agent
+    /// </summary>
+    /// <param name="agentId">Agent ID to check</param>
+    /// <returns>True if the agent can be called</returns>
+    Task<bool> CanCallAgentAsync(string agentId);
 } 

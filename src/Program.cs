@@ -106,18 +106,19 @@ class Program
 
     static async Task RunMultiAgentGdpAnalysis(IClusterClient client)
     {
-        Console.WriteLine("🌍 Starting Multi-Agent GDP Analysis");
-        Console.WriteLine("====================================");
+        Console.WriteLine("🌍 Starting Enhanced Multi-Agent GDP Analysis with Callable Agents");
+        Console.WriteLine("===================================================================");
         
         var example = client.ServiceProvider.GetRequiredService<ConfigurableAgentExample>();
-        var result = await example.RunMultiAgentGdpAnalysisAsync();
+        var result = await example.RunEnhancedMultiAgentGdpAnalysisAsync();
         
-        Console.WriteLine("📊 Multi-Agent GDP Analysis Result:");
-        Console.WriteLine("===================================");
+        Console.WriteLine("📊 Enhanced Multi-Agent GDP Analysis Result:");
+        Console.WriteLine("============================================");
         Console.WriteLine(result);
         
         Console.WriteLine("\n" + new string('=', 60));
-        Console.WriteLine("🎉 Multi-Agent GDP Analysis completed successfully!");
+        Console.WriteLine("🎉 Enhanced Multi-Agent GDP Analysis completed successfully!");
+        Console.WriteLine("💡 Key Enhancement: Agent A now maintains its own callable agents list and function registry");
         Console.WriteLine("Press any key to exit...");
         Console.ReadKey();
     }
