@@ -4,6 +4,8 @@ using Microsoft.SemanticKernel;
 using Microsoft.Extensions.DependencyInjection;
 using PsiOrleans.Models;
 using PsiOrleans.Services;
+using System.Threading.Tasks;
+using System.Threading;
 
 namespace PsiOrleans.Grains;
 
@@ -492,9 +494,38 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
             // Use the agent's GetFunctionName method for consistency
             var functionName = callableAgent.GetFunctionName();
             
-            // Create a kernel function that delegates to the target agent
+            // Capture the Orleans TaskScheduler during function creation
+            var orleansScheduler = TaskScheduler.Current;
+            
+            // Create a kernel function that maintains Orleans activation context
             var agentCallFunction = KernelFunctionFactory.CreateFromMethod(
-                async (string query) => await CallAgentDirectly(callableAgent.Id, query),
+                async (string query) => 
+                {
+                    // Use TaskFactory.StartNew to run the grain call in Orleans context
+                    return await Task.Factory.StartNew(async () =>
+                    {
+                        // This runs in the Orleans activation context
+                        // Call the target grain directly (not through self to avoid deadlock)
+                        var targetAgent = GrainFactory.GetGrain<IConfigurableAgentGrain>(callableAgent.Id);
+                        
+                        // Check if the target agent is initialized
+                        var isInitialized = await targetAgent.IsInitializedAsync();
+                        if (!isInitialized)
+                        {
+                            return $"Error: Agent {callableAgent.Id} is not initialized";
+                        }
+                        
+                        // Execute the task on the target agent
+                        var result = await targetAgent.ExecuteTaskAsync(query);
+                        
+                        _logger.LogInformation("Successfully called agent {AgentId} from {OwnerAgentId}", callableAgent.Id, _state.AgentId);
+                        
+                        return result;
+                    }, 
+                    CancellationToken.None, 
+                    TaskCreationOptions.None, 
+                    orleansScheduler).Unwrap();
+                },
                 functionName,
                 $"Call '{callableAgent.Name}' agent: {callableAgent.Description}");
             
@@ -512,63 +543,7 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
             return Task.CompletedTask;
         }
     }
-    private async Task<string> CallAgentDirectly(string agentId, string query)
-    {
-        try
-        {
-            var targetAgent = GrainFactory.GetGrain<IConfigurableAgentGrain>(agentId);
-        
-            // Check if the target agent is initialized
-            var isInitialized = await targetAgent.IsInitializedAsync();
-            if (!isInitialized)
-            {
-                return $"Error: Agent {agentId} is not initialized";
-            }
-        
-            // Execute the task on the target agent
-            return await targetAgent.ExecuteTaskAsync(query);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error calling agent {AgentId} from {OwnerAgentId}", agentId, _state.AgentId);
-            return $"Error calling agent {agentId}: {ex.Message}";
-        }
-    }
-    private async Task<string> CallAgentDirectly_Backup(string agentId, string query)
-    {
-        try
-        {
-
-            // Use the grain's task scheduler to ensure proper Orleans context
-            var result = await Task.Factory.StartNew(async () =>
-            {
-                var targetAgent = GrainFactory.GetGrain<IConfigurableAgentGrain>(agentId);
-                
-                // Check if the target agent is initialized
-                var isInitialized = await targetAgent.IsInitializedAsync();
-                if (!isInitialized)
-                {
-                    return $"Error: Agent {agentId} is not initialized";
-                }
-                
-                // Execute the task on the target agent
-                return await targetAgent.ExecuteTaskAsync(query);
-            }, 
-            CancellationToken.None, 
-            TaskCreationOptions.None, 
-            TaskScheduler.Current).Unwrap();
-            
-            _logger.LogInformation("Successfully called agent {AgentId} from {OwnerAgentId}", agentId, _state.AgentId);
-            
-            return result;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error calling agent {AgentId} from {OwnerAgentId}", agentId, _state.AgentId);
-            return $"Error calling agent {agentId}: {ex.Message}";
-        }
-    }
-
+    
     private async Task RefreshKernelWithAgentFunctions()
     {
         try
