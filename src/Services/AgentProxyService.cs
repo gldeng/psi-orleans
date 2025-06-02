@@ -23,6 +23,88 @@ public class AgentProxyService
     }
 
     /// <summary>
+    /// Task Dispatcher Agent Proxy - Analyzes a single subtask to determine handling approach
+    /// </summary>
+    [KernelFunction("task_dispatcher")]
+    [Description("Analyzes a single subtask to determine if existing agents can handle it, if a new agent needs to be created, or if it's impossible. Use this for each subtask individually.")]
+    public async Task<string> TaskDispatcherAsync(
+        [Description("Single subtask to analyze (e.g., 'Find US GDP data for 2024', 'Calculate percentage of two numbers')")] string subtask)
+    {
+        _logger.LogInformation("🎯 TaskDispatcher proxy called for subtask: {Subtask}", subtask);
+        
+        try
+        {
+            var taskDispatcher = _clusterClient.GetGrain<IConfigurableAgentGrain>("task-dispatcher");
+            
+            // Check if the agent is initialized
+            var isInitialized = await taskDispatcher.IsInitializedAsync();
+            if (!isInitialized)
+            {
+                return "Error: Task Dispatcher (Agent X) is not initialized. Please initialize it first.";
+            }
+            
+            // Execute the subtask analysis through the configurable agent interface
+            var analysisResult = await taskDispatcher.ExecuteTaskAsync(subtask);
+            
+            _logger.LogInformation("✅ TaskDispatcher proxy completed subtask analysis");
+            return analysisResult;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Error in TaskDispatcher proxy");
+            return $"Error in Task Dispatcher: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Task Feasibility Check - Quick feasibility assessment without full breakdown
+    /// </summary>
+    [KernelFunction("check_task_feasibility")]
+    [Description("Quickly assess if a task can be completed with current agent ecosystem. Returns feasibility status without full analysis.")]
+    public async Task<string> CheckTaskFeasibilityAsync(
+        [Description("Task to assess for feasibility")] string task)
+    {
+        _logger.LogInformation("📊 TaskFeasibility check called for: {Task}", task);
+        
+        try
+        {
+            var taskDispatcher = _clusterClient.GetGrain<IConfigurableAgentGrain>("task-dispatcher");
+            
+            var isInitialized = await taskDispatcher.IsInitializedAsync();
+            if (!isInitialized)
+            {
+                return "Error: Task Dispatcher not initialized.";
+            }
+            
+            // Simple feasibility check by analyzing the task
+            var analysisResult = await taskDispatcher.ExecuteTaskAsync($"Assess feasibility of this task: {task}");
+            
+            // Extract feasibility status from the analysis
+            if (analysisResult.Contains("ExistingAgentMatch"))
+            {
+                return "✅ Fully Feasible - Can be completed with existing agents";
+            }
+            else if (analysisResult.Contains("RequiresNewAgent"))
+            {
+                return "🔧 Feasible with New Agents - Requires creating specialized agents";
+            }
+            else if (analysisResult.Contains("CannotComplete"))
+            {
+                return "❌ Not Feasible - Cannot be completed with available capabilities";
+            }
+            else
+            {
+                return "🔄 Analysis in Progress";
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Error in feasibility check");
+            return $"Error checking feasibility: {ex.Message}";
+        }
+    }
+
+    /// <summary>
     /// Web Search Agent Proxy - Delegates web search queries to Agent B (web-search-agent grain)
     /// </summary>
     [KernelFunction("web_search_agent")]

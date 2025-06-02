@@ -106,19 +106,29 @@ class Program
 
     static async Task RunMultiAgentGdpAnalysis(IClusterClient client)
     {
-        Console.WriteLine("🌍 Starting Enhanced Multi-Agent GDP Analysis with Callable Agents");
-        Console.WriteLine("===================================================================");
+        Console.WriteLine("🎯 Starting GDP Analysis with Agent X (Task Dispatcher)");
+        Console.WriteLine("========================================================");
+        Console.WriteLine("Task: Find US and NY State GDP 2024, calculate NY's percentage of US GDP");
+        Console.WriteLine("Architecture: Orchestrator -> Agent X -> Specialized Agents");
+        Console.WriteLine();
         
         var example = client.ServiceProvider.GetRequiredService<ConfigurableAgentExample>();
-        var result = await example.RunEnhancedMultiAgentGdpAnalysisAsync();
         
-        Console.WriteLine("📊 Enhanced Multi-Agent GDP Analysis Result:");
-        Console.WriteLine("============================================");
+        // Run the simplified GDP analysis with Agent X
+        var result = await example.RunGdpAnalysisWithTaskDispatcherAsync();
+        
+        Console.WriteLine("🎯 GDP Analysis with Agent X Result:");
+        Console.WriteLine("====================================");
         Console.WriteLine(result);
         
-        Console.WriteLine("\n" + new string('=', 60));
-        Console.WriteLine("🎉 Enhanced Multi-Agent GDP Analysis completed successfully!");
-        Console.WriteLine("💡 Key Enhancement: Agent A now maintains its own callable agents list and function registry");
+        Console.WriteLine("\n" + new string('=', 80));
+        Console.WriteLine("🎉 GDP Analysis with Agent X completed successfully!");
+        Console.WriteLine("💡 Correct Architecture Demonstrated:");
+        Console.WriteLine("   1. Orchestrator breaks down complex task into subtasks");
+        Console.WriteLine("   2. For each subtask, Orchestrator calls task_dispatcher tool");
+        Console.WriteLine("   3. Agent X analyzes subtask and recommends handling approach");
+        Console.WriteLine("   4. Orchestrator executes based on Agent X recommendations");
+        Console.WriteLine("   5. Results are coordinated into comprehensive analysis");
         Console.WriteLine("Press any key to exit...");
         Console.ReadKey();
     }
