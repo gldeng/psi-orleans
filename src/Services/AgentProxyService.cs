@@ -15,11 +15,16 @@ public class AgentProxyService
 {
     private readonly IClusterClient _clusterClient;
     private readonly ILogger<AgentProxyService> _logger;
+    private readonly AgentCreationService _agentCreationService;
 
-    public AgentProxyService(IClusterClient clusterClient, ILogger<AgentProxyService> logger)
+    public AgentProxyService(
+        IClusterClient clusterClient, 
+        ILogger<AgentProxyService> logger,
+        AgentCreationService agentCreationService)
     {
         _clusterClient = clusterClient;
         _logger = logger;
+        _agentCreationService = agentCreationService;
     }
 
     /// <summary>
@@ -169,6 +174,34 @@ public class AgentProxyService
         {
             _logger.LogError(ex, "❌ Error in MathAgent proxy");
             return $"Error in Math Agent: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Create Agent Proxy - Delegates agent creation to the AgentCreationService
+    /// </summary>
+    [KernelFunction("create_agent")]
+    [Description("Creates a new specialized agent with custom system prompt and tools. Use this when Agent X recommends creating a new agent.")]
+    public async Task<string> CreateAgentAsync(
+        [Description("Unique ID for the new agent (e.g., 'gdp-data-agent')")] string agentId,
+        [Description("Name for the new agent (e.g., 'GDP Data Specialist')")] string agentName,
+        [Description("Custom system prompt that defines the agent's behavior and expertise")] string systemPrompt,
+        [Description("Comma-separated list of tool names this agent should have access to")] string toolNames)
+    {
+        _logger.LogInformation("🤖 CreateAgent proxy called for: {AgentId} with tools: {Tools}", agentId, toolNames);
+        
+        try
+        {
+            // Delegate the agent creation to the AgentCreationService
+            var result = await _agentCreationService.CreateAgentAsync(agentId, agentName, systemPrompt, toolNames);
+            
+            _logger.LogInformation("✅ CreateAgent proxy completed successfully");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Error in CreateAgent proxy");
+            return $"Error creating agent: {ex.Message}";
         }
     }
 

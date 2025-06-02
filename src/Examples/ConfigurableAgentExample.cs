@@ -42,43 +42,36 @@ public class ConfigurableAgentExample
 
         try
         {
-            // Step 1: Initialize Agent X (Task Dispatcher)
-            results.Add("📋 Step 1: Initializing Agent X (Task Dispatcher)");
+            // Step 1: Initialize Task Dispatcher using generic ConfigurableAgentGrain
+            results.Add("📋 Step 1: Initializing Task Dispatcher (using ConfigurableAgentGrain)");
             
             var taskDispatcherConfig = new AgentConfiguration
             {
                 SystemPrompt = @"You are Agent X, the Task Dispatcher. You analyze individual subtasks and determine:
                                1. If an existing agent can handle the subtask
-                               2. If a new agent needs to be created
+                               2. If a new agent needs to be created with specific tools and prompts
                                3. If the subtask cannot be completed
-                               Provide clear analysis and recommendations for each subtask.",
+                               
+                               Available tools:
+                               - create_agent: Create new specialized agents with custom prompts and tools
+                               - list_available_tools: See what tools are available for new agents
+                               
+                               When recommending agent creation, be specific about:
+                               - System prompt that defines the agent's expertise
+                               - Exact tool names needed (use list_available_tools to see options)
+                               
+                               Provide clear analysis and actionable recommendations for each subtask.",
                 AgentName = "TaskDispatcher",
                 Temperature = 0.1,
                 MaxTokens = 2000
             };
 
             var taskDispatcher = _clusterClient.GetGrain<IConfigurableAgentGrain>("task-dispatcher");
-            var dispatcherInit = await taskDispatcher.InitializeAsync(taskDispatcherConfig, (IEnumerable<string>?)null);
-            results.Add($"✅ Agent X: {dispatcherInit.Message}");
+            var dispatcherInit = await taskDispatcher.InitializeAsync(taskDispatcherConfig, 
+                new[] { "create_agent", "list_available_tools" });
+            results.Add($"✅ Task Dispatcher: {dispatcherInit.Message}");
 
-            // Initialize Task Dispatcher with available agents
-            var availableAgents = new Dictionary<string, CallableAgent>
-            {
-                ["web-search-agent"] = new CallableAgent("web-search-agent", "Web Search Expert", "Searches the web for information and data using Tavily search"),
-                ["math-agent"] = new CallableAgent("math-agent", "Math Expert", "Performs mathematical calculations and analysis")
-            };
-
-            // Get available tools
-            var functionRegistryService = _clusterClient.ServiceProvider.GetRequiredService<Services.IKernelFunctionRegistry>();
-            var availableTools = functionRegistryService.GetAllAvailableToolNames().ToList();
-
-            // Set up Task Dispatcher state (cast to implementation to access specific methods)
-            var taskDispatcherGrain = taskDispatcher as TaskDispatcherGrain;
-            if (taskDispatcherGrain != null)
-            {
-                await taskDispatcherGrain.InitializeTaskDispatcherAsync(availableAgents, availableTools);
-                results.Add($"✅ Task Dispatcher configured with {availableAgents.Count} agents and {availableTools.Count} tools");
-            }
+            // Remove the specialized TaskDispatcher initialization code since we're using ConfigurableAgentGrain
             results.Add("");
 
             // Step 2: Initialize specialized agents
@@ -95,25 +88,25 @@ public class ConfigurableAgentExample
                 MaxTokens = 2000
             };
 
-            var webSearchAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>("web-search-agent");
-            var webSearchInit = await webSearchAgent.InitializeAsync(webSearchConfig, new[] { "Tavily.Search" });
-            results.Add($"✅ Agent B (Web Search): {webSearchInit.Message}");
+            // var webSearchAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>("web-search-agent");
+            // var webSearchInit = await webSearchAgent.InitializeAsync(webSearchConfig, new[] { "Tavily.Search" });
+            // results.Add($"✅ Agent B (Web Search): {webSearchInit.Message}");
 
             // Initialize Math Agent (Agent C)
-            var mathConfig = new AgentConfiguration
-            {
-                SystemPrompt = @"You are Agent C, a Mathematical Analysis Expert.
-                               Perform precise calculations and provide step-by-step explanations.
-                               Handle GDP percentage calculations with accuracy.",
-                AgentName = "MathExpert",
-                Temperature = 0.1,
-                MaxTokens = 2000
-            };
-
-            var mathAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>("math-agent");
-            var mathInit = await mathAgent.InitializeAsync(mathConfig, new[] { "Math.Add", "Math.Multiply", "Math.Divide" });
-            results.Add($"✅ Agent C (Math): {mathInit.Message}");
-            results.Add("");
+            // var mathConfig = new AgentConfiguration
+            // {
+            //     SystemPrompt = @"You are Agent C, a Mathematical Analysis Expert.
+            //                    Perform precise calculations and provide step-by-step explanations.
+            //                    Handle GDP percentage calculations with accuracy.",
+            //     AgentName = "MathExpert",
+            //     Temperature = 0.1,
+            //     MaxTokens = 2000
+            // };
+            //
+            // var mathAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>("math-agent");
+            // var mathInit = await mathAgent.InitializeAsync(mathConfig, new[] { "Math.Add", "Math.Multiply", "Math.Divide" });
+            // results.Add($"✅ Agent C (Math): {mathInit.Message}");
+            // results.Add("");
 
             // Step 3: Initialize Orchestrator with Agent X access
             results.Add("📋 Step 3: Initializing Orchestrator with Agent X Access");
@@ -125,15 +118,16 @@ public class ConfigurableAgentExample
                                Your workflow:
                                1. Break down complex tasks into specific subtasks
                                2. For EACH subtask, call task_dispatcher to analyze how to handle it
-                               3. Based on Agent X's analysis, call the appropriate specialized agents
+                               3. Based on Agent X's analysis, take the appropriate action:
+                                  - If Agent X recommends an existing agent, call that agent
+                                  - If Agent X says it created a new agent, call that new agent using call_agent
                                4. Coordinate all results into a comprehensive response
                                
                                Available tools:
-                               - task_dispatcher: Analyze individual subtasks
-                               - web_search_agent: Call Web Search Agent (Agent B)
-                               - math_agent: Call Math Agent (Agent C)
+                               - task_dispatcher: Analyze individual subtasks (Agent X handles agent creation internally)
                                
-                               Always call task_dispatcher for each subtask individually.",
+                               Always call task_dispatcher for each subtask individually.
+                               Agent X will handle agent creation internally - you just call the recommended agents.",
                 AgentName = "GDPOrchestrator",
                 Temperature = 0.2,
                 MaxTokens = 4000
@@ -141,15 +135,13 @@ public class ConfigurableAgentExample
 
             var orchestratorAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>("gdp-orchestrator");
             var orchestratorInit = await orchestratorAgent.InitializeAsync(orchestratorConfig, 
-                new[] { "task_dispatcher", "web_search_agent", "math_agent" });
+                new[] { "task_dispatcher" });
             results.Add($"✅ Orchestrator: {orchestratorInit.Message}");
             
             // Configure orchestrator's callable agents (including Agent X)
             var orchestratorCallableAgents = new List<CallableAgent>
             {
                 new CallableAgent("task-dispatcher", "Task Dispatcher (Agent X)", "Analyzes individual subtasks and determines handling approach"),
-                new CallableAgent("web-search-agent", "Web Search Expert (Agent B)", "Searches the web for information and data using Tavily search"),
-                new CallableAgent("math-agent", "Math Expert (Agent C)", "Performs mathematical calculations and analysis")
             };
             
             var callableAgentsResult = await orchestratorAgent.SetCallableAgentsAsync(orchestratorCallableAgents);
@@ -164,11 +156,12 @@ public class ConfigurableAgentExample
 Follow this workflow:
 1. Break this task into specific subtasks (e.g., 'Find US GDP 2024', 'Find NY State GDP 2024', 'Calculate percentage')
 2. For EACH subtask, call task_dispatcher to analyze how to handle it
-3. Based on Agent X's recommendations, call the appropriate agents:
-   - If Agent X recommends web-search-agent, call web_search_agent
-   - If Agent X recommends math-agent, call math_agent
+3. Based on Agent X's analysis, take the appropriate action:
+   - If Agent X recommends an existing agent, call that agent directly
+   - If Agent X says it created a new agent, use call_agent with the agent ID it provides
 4. Coordinate all results into a final analysis
 
+Agent X will handle any agent creation internally. You just need to call the agents it recommends.
 Show your complete workflow and provide the final GDP percentage calculation.";
 
             var analysisResult = await orchestratorAgent.ExecuteTaskAsync(gdpTask);

@@ -201,7 +201,10 @@ public class FunctionRegistrationService
             var loggerFactory = serviceProvider.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>();
             var agentProxyLogger = loggerFactory.CreateLogger<AgentProxyService>();
             
-            var agentProxyService = new AgentProxyService(_clusterClient, agentProxyLogger);
+            // Get AgentCreationService from the service provider
+            var agentCreationService = serviceProvider.GetRequiredService<AgentCreationService>();
+            
+            var agentProxyService = new AgentProxyService(_clusterClient, agentProxyLogger, agentCreationService);
 
             _functionRegistry.RegisterFunction("AgentProxy.WebSearchAgent", 
                 KernelFunctionFactory.CreateFromMethod(
@@ -226,6 +229,26 @@ public class FunctionRegistrationService
                     agentProxyService.CheckAgentStatusAsync,
                     "CheckAgentStatus",
                     "Checks if a specific agent is initialized and ready to handle requests"));
+                    
+            // Register agent creation functions
+            _functionRegistry.RegisterFunction("AgentProxy.CreateAgent", 
+                KernelFunctionFactory.CreateFromMethod(
+                    agentProxyService.CreateAgentAsync,
+                    "CreateAgent",
+                    "Creates a new specialized agent with custom system prompt and tools"));
+                    
+            // Register AgentCreationService functions directly with simple names
+            _functionRegistry.RegisterFunction("create_agent", 
+                KernelFunctionFactory.CreateFromMethod(
+                    agentCreationService.CreateAgentAsync,
+                    "create_agent",
+                    "Creates a new specialized agent with custom system prompt and specified tools"));
+                    
+            _functionRegistry.RegisterFunction("list_available_tools", 
+                KernelFunctionFactory.CreateFromMethod(
+                    agentCreationService.ListAvailableToolsAsync,
+                    "list_available_tools",
+                    "Lists all available tools that can be assigned to new agents"));
         }
         catch (Exception ex)
         {

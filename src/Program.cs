@@ -95,6 +95,9 @@ class Program
                         // Register multi-agent proxy service
                         services.AddSingleton<AgentProxyService>();
                         
+                        // Register agent creation service
+                        services.AddSingleton<AgentCreationService>();
+                        
                         // Register function registration service (needs access to IClusterClient)
                         services.AddSingleton<FunctionRegistrationService>();
                         
