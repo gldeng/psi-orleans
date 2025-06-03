@@ -47,24 +47,28 @@ public class ConfigurableAgentExample
             
             var taskDispatcherConfig = new AgentConfiguration
             {
-                SystemPrompt = @"You are Agent X, the Task Dispatcher. You analyze subtasks and EXECUTE them:
+                SystemPrompt = @"You are Agent X, the Task Dispatcher. You analyze subtasks and EXECUTE them efficiently by reusing existing agents when possible:
                                
                                Workflow:
                                1. Analyze the subtask to determine the best handling approach
-                               2. Take action based on analysis:
-                                  - If an existing agent can handle it, call that agent using call_agent
-                                  - If a new agent is needed, create it using create_agent, then call it using call_agent
+                               2. Check for existing suitable agents using find_suitable_agent
+                               3. Take action based on discovery:
+                                  - If suitable existing agent found, call that agent using call_agent
+                                  - If no suitable agent exists, create one using create_agent, then call it using call_agent
                                   - If impossible, return an error message
-                               3. Always return the actual execution result, not just analysis
+                               4. Always return the actual execution result, not just analysis
                                
                                Available tools:
+                               - find_suitable_agent: Check if existing agents can handle the task
+                               - list_created_agents: See all created agents and their usage stats
                                - create_agent: Create new specialized agents with custom prompts and tools
                                - list_available_tools: See what tools are available for new agents
                                - call_agent: Call any agent by ID to execute tasks
                                
-                               Known existing agents: web-search-agent, math-agent
+                               Known pre-existing agents: web-search-agent, math-agent
                                
-                               Your goal is to COMPLETE the subtask, not just analyze it.",
+                               ALWAYS check for suitable existing agents first to avoid duplicates!
+                               Your goal is to COMPLETE the subtask efficiently by reusing agents when possible.",
                 AgentName = "TaskDispatcher",
                 Temperature = 0.1,
                 MaxTokens = 2000
@@ -72,7 +76,7 @@ public class ConfigurableAgentExample
 
             var taskDispatcher = _clusterClient.GetGrain<IConfigurableAgentGrain>("task-dispatcher");
             var dispatcherInit = await taskDispatcher.InitializeAsync(taskDispatcherConfig, 
-                new[] { "create_agent", "list_available_tools", "call_agent" });
+                new[] { "find_suitable_agent", "list_created_agents", "create_agent", "list_available_tools", "call_agent" });
             results.Add($"✅ Task Dispatcher: {dispatcherInit.Message}");
 
             // Remove the specialized TaskDispatcher initialization code since we're using ConfigurableAgentGrain

@@ -250,6 +250,18 @@ public class FunctionRegistrationService
                     "list_available_tools",
                     "Lists all available tools that can be assigned to new agents"));
                     
+            _functionRegistry.RegisterFunction("list_created_agents", 
+                KernelFunctionFactory.CreateFromMethod(
+                    agentCreationService.ListCreatedAgentsAsync,
+                    "list_created_agents",
+                    "Lists all agents that have been created by the system with their usage statistics"));
+                    
+            _functionRegistry.RegisterFunction("find_suitable_agent", 
+                KernelFunctionFactory.CreateFromMethod(
+                    agentCreationService.FindSuitableAgentAsync,
+                    "find_suitable_agent",
+                    "Finds existing created agents that might be suitable for handling a specific task"));
+                    
             // Register call_agent function with simple name
             _functionRegistry.RegisterFunction("call_agent", 
                 KernelFunctionFactory.CreateFromMethod(
