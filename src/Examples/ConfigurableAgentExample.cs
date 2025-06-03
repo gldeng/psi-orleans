@@ -47,20 +47,24 @@ public class ConfigurableAgentExample
             
             var taskDispatcherConfig = new AgentConfiguration
             {
-                SystemPrompt = @"You are Agent X, the Task Dispatcher. You analyze individual subtasks and determine:
-                               1. If an existing agent can handle the subtask
-                               2. If a new agent needs to be created with specific tools and prompts
-                               3. If the subtask cannot be completed
+                SystemPrompt = @"You are Agent X, the Task Dispatcher. You analyze subtasks and EXECUTE them:
+                               
+                               Workflow:
+                               1. Analyze the subtask to determine the best handling approach
+                               2. Take action based on analysis:
+                                  - If an existing agent can handle it, call that agent using call_agent
+                                  - If a new agent is needed, create it using create_agent, then call it using call_agent
+                                  - If impossible, return an error message
+                               3. Always return the actual execution result, not just analysis
                                
                                Available tools:
                                - create_agent: Create new specialized agents with custom prompts and tools
                                - list_available_tools: See what tools are available for new agents
+                               - call_agent: Call any agent by ID to execute tasks
                                
-                               When recommending agent creation, be specific about:
-                               - System prompt that defines the agent's expertise
-                               - Exact tool names needed (use list_available_tools to see options)
+                               Known existing agents: web-search-agent, math-agent
                                
-                               Provide clear analysis and actionable recommendations for each subtask.",
+                               Your goal is to COMPLETE the subtask, not just analyze it.",
                 AgentName = "TaskDispatcher",
                 Temperature = 0.1,
                 MaxTokens = 2000
@@ -68,7 +72,7 @@ public class ConfigurableAgentExample
 
             var taskDispatcher = _clusterClient.GetGrain<IConfigurableAgentGrain>("task-dispatcher");
             var dispatcherInit = await taskDispatcher.InitializeAsync(taskDispatcherConfig, 
-                new[] { "create_agent", "list_available_tools" });
+                new[] { "create_agent", "list_available_tools", "call_agent" });
             results.Add($"✅ Task Dispatcher: {dispatcherInit.Message}");
 
             // Remove the specialized TaskDispatcher initialization code since we're using ConfigurableAgentGrain
@@ -117,17 +121,15 @@ public class ConfigurableAgentExample
                                
                                Your workflow:
                                1. Break down complex tasks into specific subtasks
-                               2. For EACH subtask, call task_dispatcher to analyze how to handle it
-                               3. Based on Agent X's analysis, take the appropriate action:
-                                  - If Agent X recommends an existing agent, call that agent
-                                  - If Agent X says it created a new agent, call that new agent using call_agent
+                               2. For EACH subtask, call task_dispatcher to execute it (Agent X handles everything)
+                               3. Agent X will analyze, create agents if needed, and return the execution result
                                4. Coordinate all results into a comprehensive response
                                
                                Available tools:
-                               - task_dispatcher: Analyze individual subtasks (Agent X handles agent creation internally)
+                               - task_dispatcher: Execute individual subtasks (Agent X handles analysis, creation, and execution internally)
                                
-                               Always call task_dispatcher for each subtask individually.
-                               Agent X will handle agent creation internally - you just call the recommended agents.",
+                               Agent X is now a complete execution unit - it will return actual results, not just recommendations.
+                               Simply call task_dispatcher for each subtask and use the results it provides.",
                 AgentName = "GDPOrchestrator",
                 Temperature = 0.2,
                 MaxTokens = 4000
@@ -155,13 +157,11 @@ public class ConfigurableAgentExample
 
 Follow this workflow:
 1. Break this task into specific subtasks (e.g., 'Find US GDP 2024', 'Find NY State GDP 2024', 'Calculate percentage')
-2. For EACH subtask, call task_dispatcher to analyze how to handle it
-3. Based on Agent X's analysis, take the appropriate action:
-   - If Agent X recommends an existing agent, call that agent directly
-   - If Agent X says it created a new agent, use call_agent with the agent ID it provides
-4. Coordinate all results into a final analysis
+2. For EACH subtask, call task_dispatcher to execute it completely
+3. Agent X will handle everything internally (analysis, agent creation if needed, execution)
+4. Coordinate all execution results into a final analysis
 
-Agent X will handle any agent creation internally. You just need to call the agents it recommends.
+Agent X is now a complete execution unit - it will return actual results for each subtask.
 Show your complete workflow and provide the final GDP percentage calculation.";
 
             var analysisResult = await orchestratorAgent.ExecuteTaskAsync(gdpTask);

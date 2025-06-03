@@ -249,6 +249,13 @@ public class FunctionRegistrationService
                     agentCreationService.ListAvailableToolsAsync,
                     "list_available_tools",
                     "Lists all available tools that can be assigned to new agents"));
+                    
+            // Register call_agent function with simple name
+            _functionRegistry.RegisterFunction("call_agent", 
+                KernelFunctionFactory.CreateFromMethod(
+                    agentProxyService.CallAgentAsync,
+                    "call_agent",
+                    "Calls any ConfigurableAgentGrain by its ID with a natural language query"));
         }
         catch (Exception ex)
         {
