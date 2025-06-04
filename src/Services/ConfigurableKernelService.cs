@@ -14,13 +14,16 @@ public class ConfigurableKernelService : IConfigurableKernelService
 {
     private readonly IKernelFunctionRegistry _functionRegistry;
     private readonly ILogger<ConfigurableKernelService> _logger;
+    private readonly IManualFunctionCallProcessor? _manualFunctionCallProcessor;
 
     public ConfigurableKernelService(
         IKernelFunctionRegistry functionRegistry, 
-        ILogger<ConfigurableKernelService> logger)
+        ILogger<ConfigurableKernelService> logger,
+        IManualFunctionCallProcessor? manualFunctionCallProcessor = null)
     {
         _functionRegistry = functionRegistry;
         _logger = logger;
+        _manualFunctionCallProcessor = manualFunctionCallProcessor;
     }
 
     public async Task<Kernel> CreateKernelAsync(
@@ -209,11 +212,11 @@ public class ConfigurableKernelService : IConfigurableKernelService
         }
     }
 
-    public async Task<string> ExecuteTaskAsync(Kernel kernel, string task, ConfigurableAgentState state, string systemPrompt)
+    public async Task<string> ExecuteTaskAsync(Kernel kernel, string task, ConfigurableAgentState state, string systemPrompt, bool waitForCompletion = true)
     {
         try
         {
-            _logger.LogInformation("Executing task with configurable kernel: {Task}", task);
+            _logger.LogInformation("Executing task with configurable kernel: {Task} (waitForCompletion: {WaitForCompletion})", task, waitForCompletion);
 
             var chatService = kernel.GetRequiredService<IChatCompletionService>();
             var chatHistory = state.ToSemanticKernelChatHistory();
@@ -229,23 +232,135 @@ public class ConfigurableKernelService : IConfigurableKernelService
             chatHistory.AddUserMessage(task);
             state.AddChatMessage("user", task);
 
-            // Configure execution settings
+            // Configure execution settings for manual function calling
             var executionSettings = new OpenAIPromptExecutionSettings
             {
-                ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions,
+                // Enable function calling but don't auto-invoke - we'll handle manually
+                ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions,
                 MaxTokens = state.Configuration?.MaxTokens ?? 4000,
                 Temperature = state.Configuration?.Temperature ?? 0.1
             };
 
-            // Execute with automatic function calling
+            // Get initial response from LLM (may contain function calls)
             var result = await chatService.GetChatMessageContentAsync(
                 chatHistory,
                 executionSettings,
                 kernel);
 
+            // Check if manual function call processor is available
+            if (_manualFunctionCallProcessor != null && state.Configuration != null)
+            {
+                // Process function calls in a loop until we get a final response with content
+                const int maxIterations = 10; // Prevent infinite loops
+                int iteration = 0;
+                
+                while (iteration < maxIterations)
+                {
+                    iteration++;
+                    
+                    // Process any function calls manually
+                    var functionCallResult = await _manualFunctionCallProcessor.ProcessFunctionCallsAsync(
+                        result,
+                        kernel,
+                        state.AgentId,
+                        chatHistory);
+
+                    if (!functionCallResult.Success)
+                    {
+                        var errorMessage = $"Function call processing failed: {string.Join(", ", functionCallResult.ErrorMessages)}";
+                        _logger.LogError(errorMessage);
+                        return errorMessage;
+                    }
+
+                    // If there were pending agent calls, inform the user
+                    if (functionCallResult.PendingAgentCalls.Any())
+                    {
+                        _logger.LogInformation("Initiated {Count} non-blocking agent calls", 
+                            functionCallResult.PendingAgentCalls.Count);
+                    }
+
+                    // Check if we should pause LLM execution for pending agent calls
+                    if (functionCallResult.ShouldPauseLLMExecution)
+                    {
+                        _logger.LogInformation("Pausing LLM execution, waiting for {Count} agent callbacks", 
+                            functionCallResult.PendingCallsRequiringWait);
+                        
+                        // Update state to track pending calls
+                        state.WorkingMemory["pending_agent_calls"] = functionCallResult.PendingCallsRequiringWait.ToString();
+                        state.WorkingMemory["execution_paused"] = "true";
+                        state.WorkingMemory["pause_timestamp"] = DateTime.UtcNow.ToString("O");
+
+                        // If waitForCompletion is false (user-interactive), return pause message immediately
+                        if (!waitForCompletion)
+                        {
+                            var pauseMessage = $"Execution paused - waiting for {functionCallResult.PendingCallsRequiringWait} agent callback(s) to complete.";
+                            state.AddChatMessage("system", pauseMessage);
+                            return pauseMessage;
+                        }
+                        
+                        // If waitForCompletion is true (agent-to-agent calls), wait for callbacks
+                        _logger.LogInformation("Waiting for agent callbacks to complete before returning result");
+                        
+                        // Wait for all callbacks to complete by checking the WorkingMemory
+                        await WaitForCallbacksToCompleteAsync(state, functionCallResult.PendingCallsRequiringWait);
+                        
+                        // After callbacks complete, get the final result from chat history
+                        var finalResult = await chatService.GetChatMessageContentAsync(
+                            state.ToSemanticKernelChatHistory(),
+                            executionSettings,
+                            kernel);
+                        
+                        result = finalResult;
+                        
+                        // Continue processing in case there are more function calls
+                        continue;
+                    }
+
+                    // If no function calls were processed and we have content, we're done
+                    if (!functionCallResult.ChatHistoryUpdated && !string.IsNullOrEmpty(result.Content))
+                    {
+                        break;
+                    }
+
+                    // Get next response from LLM after function results
+                    if (functionCallResult.ChatHistoryUpdated)
+                    {
+                        var nextResult = await chatService.GetChatMessageContentAsync(
+                            chatHistory,
+                            executionSettings,
+                            kernel);
+                        
+                        result = nextResult;
+                        
+                        // If this result has content and no function calls, we're done
+                        if (!string.IsNullOrEmpty(result.Content) && 
+                            !FunctionCallContent.GetFunctionCalls(result).Any())
+                        {
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        // No chat history update means no function calls were processed
+                        break;
+                    }
+                }
+                
+                if (iteration >= maxIterations)
+                {
+                    _logger.LogWarning("Reached maximum function call iterations ({MaxIterations}) for task execution", maxIterations);
+                }
+            }
+            else
+            {
+                // Fallback to adding the result directly if no manual processor
+                chatHistory.Add(result);
+                _logger.LogWarning("Manual function call processor not available, using basic processing");
+            }
+
             var response = result.Content ?? "Task completed but no response generated.";
 
-            // Add assistant response to chat history
+            // Add assistant response to chat history and state
             state.AddChatMessage("assistant", response);
 
             // Update working memory
@@ -262,6 +377,46 @@ public class ConfigurableKernelService : IConfigurableKernelService
             var errorMessage = $"Task execution failed: {ex.Message}";
             return errorMessage;
         }
+    }
+
+    /// <summary>
+    /// Wait for all agent callbacks to complete by polling the state
+    /// </summary>
+    private async Task WaitForCallbacksToCompleteAsync(ConfigurableAgentState state, int expectedCallbacks)
+    {
+        const int maxWaitSeconds = 60; // Maximum wait time
+        const int pollIntervalMs = 100; // Poll every 100ms
+        
+        var startTime = DateTime.UtcNow;
+        
+        while ((DateTime.UtcNow - startTime).TotalSeconds < maxWaitSeconds)
+        {
+            // Check if execution is no longer paused
+            if (!state.WorkingMemory.ContainsKey("execution_paused") || 
+                state.WorkingMemory["execution_paused"]?.ToString() != "true")
+            {
+                _logger.LogInformation("All agent callbacks completed, execution resumed");
+                return;
+            }
+            
+            // Check pending calls count
+            if (state.WorkingMemory.ContainsKey("pending_agent_calls"))
+            {
+                var pendingCallsValue = state.WorkingMemory["pending_agent_calls"]?.ToString();
+                if (!string.IsNullOrEmpty(pendingCallsValue) && int.TryParse(pendingCallsValue, out var pendingCount))
+                {
+                    if (pendingCount <= 0)
+                    {
+                        _logger.LogInformation("All agent callbacks completed (pending count: {Count})", pendingCount);
+                        return;
+                    }
+                }
+            }
+            
+            await Task.Delay(pollIntervalMs);
+        }
+        
+        _logger.LogWarning("Timed out waiting for agent callbacks to complete after {MaxWait} seconds", maxWaitSeconds);
     }
 
     public async Task<string> ContinueConversationAsync(Kernel kernel, string userMessage, ConfigurableAgentState state, string systemPrompt)
@@ -284,23 +439,115 @@ public class ConfigurableKernelService : IConfigurableKernelService
             chatHistory.AddUserMessage(userMessage);
             state.AddChatMessage("user", userMessage);
 
-            // Configure execution settings
+            // Configure execution settings for manual function calling
             var executionSettings = new OpenAIPromptExecutionSettings
             {
-                ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions,
+                // Enable function calling but don't auto-invoke - we'll handle manually
+                ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions,
                 MaxTokens = state.Configuration?.MaxTokens ?? 4000,
                 Temperature = state.Configuration?.Temperature ?? 0.1
             };
 
-            // Execute with automatic function calling
+            // Get initial response from LLM (may contain function calls)
             var result = await chatService.GetChatMessageContentAsync(
                 chatHistory,
                 executionSettings,
                 kernel);
 
+            // Check if manual function call processor is available
+            if (_manualFunctionCallProcessor != null && state.Configuration != null)
+            {
+                // Process function calls in a loop until we get a final response with content
+                const int maxIterations = 10; // Prevent infinite loops
+                int iteration = 0;
+                
+                while (iteration < maxIterations)
+                {
+                    iteration++;
+                    
+                    // Process any function calls manually
+                    var functionCallResult = await _manualFunctionCallProcessor.ProcessFunctionCallsAsync(
+                        result,
+                        kernel,
+                        state.AgentId,
+                        chatHistory);
+
+                    if (!functionCallResult.Success)
+                    {
+                        var errorMessage = $"Function call processing failed: {string.Join(", ", functionCallResult.ErrorMessages)}";
+                        _logger.LogError(errorMessage);
+                        return errorMessage;
+                    }
+
+                    // If there were pending agent calls, inform the user
+                    if (functionCallResult.PendingAgentCalls.Any())
+                    {
+                        _logger.LogInformation("Initiated {Count} non-blocking agent calls", 
+                            functionCallResult.PendingAgentCalls.Count);
+                    }
+
+                    // Check if we should pause LLM execution for pending agent calls
+                    if (functionCallResult.ShouldPauseLLMExecution)
+                    {
+                        _logger.LogInformation("Pausing LLM execution, waiting for {Count} agent callbacks", 
+                            functionCallResult.PendingCallsRequiringWait);
+                        
+                        // Update state to track pending calls
+                        state.WorkingMemory["pending_agent_calls"] = functionCallResult.PendingCallsRequiringWait.ToString();
+                        state.WorkingMemory["execution_paused"] = "true";
+                        state.WorkingMemory["pause_timestamp"] = DateTime.UtcNow.ToString("O");
+
+                        // Return special message indicating execution is paused
+                        var pauseMessage = $"Execution paused - waiting for {functionCallResult.PendingCallsRequiringWait} agent callback(s) to complete.";
+                        state.AddChatMessage("system", pauseMessage);
+                        return pauseMessage;
+                    }
+
+                    // If no function calls were processed and we have content, we're done
+                    if (!functionCallResult.ChatHistoryUpdated && !string.IsNullOrEmpty(result.Content))
+                    {
+                        break;
+                    }
+
+                    // Get next response from LLM after function results
+                    if (functionCallResult.ChatHistoryUpdated)
+                    {
+                        var nextResult = await chatService.GetChatMessageContentAsync(
+                            chatHistory,
+                            executionSettings,
+                            kernel);
+                        
+                        result = nextResult;
+                        
+                        // If this result has content and no function calls, we're done
+                        if (!string.IsNullOrEmpty(result.Content) && 
+                            !FunctionCallContent.GetFunctionCalls(result).Any())
+                        {
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        // No chat history update means no function calls were processed
+                        break;
+                    }
+                }
+                
+                if (iteration >= maxIterations)
+                {
+                    _logger.LogWarning("Reached maximum function call iterations ({MaxIterations}) for conversation", maxIterations);
+                }
+            }
+            else
+            {
+                // Fallback to adding the result directly if no manual processor
+                chatHistory.Add(result);
+                _logger.LogWarning("Manual function call processor not available, using basic processing");
+            }
+
             var response = result.Content ?? "No response generated.";
 
-            // Add assistant response to chat history
+            // Add assistant response to chat history and state
             state.AddChatMessage("assistant", response);
 
             // Update working memory

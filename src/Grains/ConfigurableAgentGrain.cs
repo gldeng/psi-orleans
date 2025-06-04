@@ -1,6 +1,8 @@
 using Orleans;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
 using Microsoft.Extensions.DependencyInjection;
 using PsiOrleans.Models;
 using PsiOrleans.Services;
@@ -135,7 +137,8 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
 
         try
         {
-            var result = await _kernelService.ExecuteTaskAsync(_kernel, task, _state, _state.Configuration.SystemPrompt);
+            // For user-interactive calls, use waitForCompletion = false to maintain pause-resume behavior
+            var result = await _kernelService.ExecuteTaskAsync(_kernel, task, _state, _state.Configuration.SystemPrompt, waitForCompletion: false);
             
             var executionTime = DateTime.UtcNow - startTime;
             _state.AddExecutionTime(executionTime);
@@ -597,6 +600,182 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error refreshing kernel for ConfigurableAgent {AgentId}", _state.AgentId);
+        }
+    }
+    
+    public async Task ReceiveCallbackAsync(string callId, string message, bool isSuccess)
+    {
+        try
+        {
+            _logger.LogInformation("Received callback for call {CallId} on agent {AgentId}: Success={IsSuccess}", 
+                callId, _state.AgentId, isSuccess);
+
+            // Add the callback message to the chat history as a system message
+            var callbackMessage = $"[CALLBACK] {message}";
+            _state.AddChatMessage("system", callbackMessage);
+
+            // Update metrics
+            if (isSuccess)
+            {
+                _state.SuccessfulTasks++;
+            }
+            else
+            {
+                _state.FailedTasks++;
+            }
+
+            // Check if execution was paused and if we should continue
+            if (_state.WorkingMemory.ContainsKey("execution_paused") && 
+                _state.WorkingMemory["execution_paused"]?.ToString() == "true")
+            {
+                // Decrement pending calls counter
+                if (_state.WorkingMemory.ContainsKey("pending_agent_calls"))
+                {
+                    var pendingCallsValue = _state.WorkingMemory["pending_agent_calls"]?.ToString();
+                    if (!string.IsNullOrEmpty(pendingCallsValue) && int.TryParse(pendingCallsValue, out var pendingCount))
+                    {
+                        pendingCount--;
+                        _state.WorkingMemory["pending_agent_calls"] = pendingCount.ToString();
+
+                        _logger.LogInformation("Agent {AgentId} has {PendingCount} pending calls remaining", 
+                            _state.AgentId, pendingCount);
+
+                        // If all pending calls are completed, continue execution
+                        if (pendingCount <= 0)
+                        {
+                            _logger.LogInformation("All agent callbacks completed for {AgentId}, continuing execution", 
+                                _state.AgentId);
+
+                            // Clear pause state
+                            _state.WorkingMemory["execution_paused"] = "false";
+                            _state.WorkingMemory.Remove("pending_agent_calls");
+                            _state.WorkingMemory.Remove("pause_timestamp");
+
+                            // Continue LLM execution with updated chat history
+                            await ContinueExecutionAfterCallbacksAsync();
+                        }
+                    }
+                }
+            }
+
+            _logger.LogDebug("Callback processed successfully for agent {AgentId}", _state.AgentId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing callback for agent {AgentId}", _state.AgentId);
+        }
+    }
+
+    /// <summary>
+    /// Continue LLM execution after all agent callbacks have been received
+    /// </summary>
+    private async Task ContinueExecutionAfterCallbacksAsync()
+    {
+        try
+        {
+            if (_kernel == null)
+            {
+                _logger.LogWarning("Cannot continue execution - kernel not available for agent {AgentId}", _state.AgentId);
+                return;
+            }
+
+            _logger.LogInformation("Continuing LLM execution for agent {AgentId} after receiving all callbacks", _state.AgentId);
+
+            var chatService = _kernel.GetRequiredService<IChatCompletionService>();
+            var chatHistory = _state.ToSemanticKernelChatHistory();
+
+            // Configure execution settings
+            var executionSettings = new OpenAIPromptExecutionSettings
+            {
+                ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions,
+                MaxTokens = _state.Configuration?.MaxTokens ?? 4000,
+                Temperature = _state.Configuration?.Temperature ?? 0.1
+            };
+
+            // Get LLM response now that all callback results are in chat history
+            var result = await chatService.GetChatMessageContentAsync(
+                chatHistory,
+                executionSettings,
+                _kernel);
+
+            // Process any new function calls that might result from this
+            if (_kernel.Services.GetService<IManualFunctionCallProcessor>() is { } processor)
+            {
+                // Process function calls in a loop until we get a final response with content
+                const int maxIterations = 10; // Prevent infinite loops
+                int iteration = 0;
+                
+                while (iteration < maxIterations)
+                {
+                    iteration++;
+                    
+                    var functionCallResult = await processor.ProcessFunctionCallsAsync(
+                        result,
+                        _kernel,
+                        _state.AgentId,
+                        chatHistory);
+
+                    if (!functionCallResult.Success)
+                    {
+                        _logger.LogError("Function call processing failed during continuation: {Errors}", 
+                            string.Join(", ", functionCallResult.ErrorMessages));
+                        return;
+                    }
+
+                    // If there are new pending calls, update state accordingly and pause again
+                    if (functionCallResult.ShouldPauseLLMExecution)
+                    {
+                        _logger.LogInformation("New agent calls initiated during continuation, pausing again");
+                        _state.WorkingMemory["pending_agent_calls"] = functionCallResult.PendingCallsRequiringWait.ToString();
+                        _state.WorkingMemory["execution_paused"] = "true";
+                        return;
+                    }
+
+                    // If no function calls were processed and we have content, we're done
+                    if (!functionCallResult.ChatHistoryUpdated && !string.IsNullOrEmpty(result.Content))
+                    {
+                        break;
+                    }
+
+                    // Get next response if function calls were processed
+                    if (functionCallResult.ChatHistoryUpdated)
+                    {
+                        var nextResult = await chatService.GetChatMessageContentAsync(
+                            chatHistory,
+                            executionSettings,
+                            _kernel);
+                        
+                        result = nextResult;
+                        
+                        // If this result has content and no function calls, we're done
+                        if (!string.IsNullOrEmpty(result.Content) && 
+                            !FunctionCallContent.GetFunctionCalls(result).Any())
+                        {
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        // No chat history update means no function calls were processed
+                        break;
+                    }
+                }
+                
+                if (iteration >= maxIterations)
+                {
+                    _logger.LogWarning("Reached maximum function call iterations ({MaxIterations}) during execution continuation", maxIterations);
+                }
+            }
+
+            // Add the final response to state
+            var response = result.Content ?? "Execution continued successfully.";
+            _state.AddChatMessage("assistant", response);
+
+            _logger.LogInformation("LLM execution continuation completed for agent {AgentId}", _state.AgentId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error continuing execution after callbacks for agent {AgentId}", _state.AgentId);
         }
     }
 } 

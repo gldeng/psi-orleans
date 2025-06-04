@@ -92,6 +92,10 @@ class Program
                         // Register configurable kernel service
                         services.AddSingleton<IConfigurableKernelService, ConfigurableKernelService>();
                         
+                        // Register manual function call processing services
+                        services.AddSingleton<AgentCallbackManager>();
+                        services.AddSingleton<IManualFunctionCallProcessor, ManualFunctionCallProcessor>();
+                        
                         // Register multi-agent proxy service
                         services.AddSingleton<AgentProxyService>();
                         

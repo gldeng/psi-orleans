@@ -154,4 +154,13 @@ public interface IConfigurableAgentGrain : IGrainWithStringKey
     /// <param name="agentId">Agent ID to check</param>
     /// <returns>True if the agent can be called</returns>
     Task<bool> CanCallAgentAsync(string agentId);
+    
+    /// <summary>
+    /// Receive a callback notification when an agent call completes
+    /// </summary>
+    /// <param name="callId">ID of the completed call</param>
+    /// <param name="message">Callback message containing results or error information</param>
+    /// <param name="isSuccess">Whether the call was successful</param>
+    /// <returns>Task completion</returns>
+    Task ReceiveCallbackAsync(string callId, string message, bool isSuccess);
 } 

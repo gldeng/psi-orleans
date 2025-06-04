@@ -32,14 +32,15 @@ public interface IConfigurableKernelService
         IEnumerable<string>? toolNames);
     
     /// <summary>
-    /// Execute a task using a configured kernel
+    /// Execute a task using the configured kernel
     /// </summary>
-    /// <param name="kernel">Kernel instance to use</param>
-    /// <param name="task">Task to execute</param>
-    /// <param name="state">Agent state for context</param>
-    /// <param name="systemPrompt">System prompt to use</param>
+    /// <param name="kernel">The kernel to use for execution</param>
+    /// <param name="task">The task to execute</param>
+    /// <param name="state">The agent state</param>
+    /// <param name="systemPrompt">The system prompt to use</param>
+    /// <param name="waitForCompletion">Whether to wait for all agent callbacks before returning (default: true for programmatic calls)</param>
     /// <returns>Task execution result</returns>
-    Task<string> ExecuteTaskAsync(Kernel kernel, string task, ConfigurableAgentState state, string systemPrompt);
+    Task<string> ExecuteTaskAsync(Kernel kernel, string task, ConfigurableAgentState state, string systemPrompt, bool waitForCompletion = true);
     
     /// <summary>
     /// Continue a conversation using a configured kernel

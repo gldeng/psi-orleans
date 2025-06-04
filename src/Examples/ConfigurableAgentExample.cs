@@ -65,8 +65,6 @@ public class ConfigurableAgentExample
                                - list_available_tools: See what tools are available for new agents
                                - call_agent: Call any agent by ID to execute tasks
                                
-                               Known pre-existing agents: web-search-agent, math-agent
-                               
                                ALWAYS check for suitable existing agents first to avoid duplicates!
                                Your goal is to COMPLETE the subtask efficiently by reusing agents when possible.",
                 AgentName = "TaskDispatcher",
@@ -76,7 +74,7 @@ public class ConfigurableAgentExample
 
             var taskDispatcher = _clusterClient.GetGrain<IConfigurableAgentGrain>("task-dispatcher");
             var dispatcherInit = await taskDispatcher.InitializeAsync(taskDispatcherConfig, 
-                new[] { "find_suitable_agent", "list_created_agents", "create_agent", "list_available_tools", "call_agent" });
+                new[] { "list_created_agents", "create_agent", "list_available_tools", "call_agent" });
             results.Add($"✅ Task Dispatcher: {dispatcherInit.Message}");
 
             // Remove the specialized TaskDispatcher initialization code since we're using ConfigurableAgentGrain
@@ -96,25 +94,25 @@ public class ConfigurableAgentExample
                 MaxTokens = 2000
             };
 
-            // var webSearchAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>("web-search-agent");
-            // var webSearchInit = await webSearchAgent.InitializeAsync(webSearchConfig, new[] { "Tavily.Search" });
-            // results.Add($"✅ Agent B (Web Search): {webSearchInit.Message}");
+            var webSearchAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>("web-search-agent");
+            var webSearchInit = await webSearchAgent.InitializeAsync(webSearchConfig, new[] { "Tavily.Search" });
+            results.Add($"✅ Agent B (Web Search): {webSearchInit.Message}");
 
             // Initialize Math Agent (Agent C)
-            // var mathConfig = new AgentConfiguration
-            // {
-            //     SystemPrompt = @"You are Agent C, a Mathematical Analysis Expert.
-            //                    Perform precise calculations and provide step-by-step explanations.
-            //                    Handle GDP percentage calculations with accuracy.",
-            //     AgentName = "MathExpert",
-            //     Temperature = 0.1,
-            //     MaxTokens = 2000
-            // };
-            //
-            // var mathAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>("math-agent");
-            // var mathInit = await mathAgent.InitializeAsync(mathConfig, new[] { "Math.Add", "Math.Multiply", "Math.Divide" });
-            // results.Add($"✅ Agent C (Math): {mathInit.Message}");
-            // results.Add("");
+            var mathConfig = new AgentConfiguration
+            {
+                SystemPrompt = @"You are Agent C, a Mathematical Analysis Expert.
+                               Perform precise calculations and provide step-by-step explanations.
+                               Handle GDP percentage calculations with accuracy.",
+                AgentName = "MathExpert",
+                Temperature = 0.1,
+                MaxTokens = 2000
+            };
+
+            var mathAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>("math-agent");
+            var mathInit = await mathAgent.InitializeAsync(mathConfig, new[] { "Math.Add", "Math.Multiply", "Math.Divide" });
+            results.Add($"✅ Agent C (Math): {mathInit.Message}");
+            results.Add("");
 
             // Step 3: Initialize Orchestrator with Agent X access
             results.Add("📋 Step 3: Initializing Orchestrator with Agent X Access");
