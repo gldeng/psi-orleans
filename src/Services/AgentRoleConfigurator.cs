@@ -74,18 +74,16 @@ public class AgentRoleConfigurator : IAgentRoleConfigurator
     {
         _logger.LogDebug("Configuring orchestrator tools");
 
-        // Orchestrator tools are typically added via the existing agent creation/communication infrastructure
-        // For now, we rely on the existing SetupOrchestratorTools pattern in ConfigurableAgentGrain
-        // This will be further refactored when we extract the communication handler
-
-        // The orchestrator tools include:
+        // ====== TODO: Implement in Phase 3 - OrchestratorStateMachine ======
+        // For now, orchestrator tools are handled by the existing ExecuteAsOrchestratorAsync method
+        // in ConfigurableAgentGrain until we implement OrchestratorStateMachine
+        
+        // When Phase 3 is implemented, this should add:
         // - SendParentCallback: Send completion/status updates to parent agent
         // - CreateAgent: Create new specialized child agents with specific configurations  
         // - CallChildAgent: Delegate subtasks to child agents
 
-        // Note: Actual tool registration will be handled by the existing infrastructure
-        // until we complete the full extraction of communication handlers
-
+        _logger.LogInformation("Orchestrator tool configuration deferred to Phase 3 - using existing implementation");
         return kernel;
     }
 
@@ -97,13 +95,15 @@ public class AgentRoleConfigurator : IAgentRoleConfigurator
     {
         _logger.LogDebug("Configuring specialized tools");
 
-        // Specialized agents get:
-        // - All normal blocking tools for their specialization (already configured in base kernel)
-        // - SendParentCallback: Send completion/status updates to parent agent (no agent creation tools)
+        // ====== Specialized tools are already configured in the base kernel ======
+        // The specialized tools include:
+        // - All normal blocking tools for their specialization (Math.Add, Tavily.search, etc.)
+        // - These were already added during kernel creation with the original tool names
+        
+        // The SendParentCallback functionality is handled by the SpecializedStateMachine itself
+        // rather than being added as a kernel tool
 
-        // Note: The specialized tools are primarily the normal tools that were passed during initialization
-        // The SendParentCallback functionality is handled by the state machine itself
-
+        _logger.LogInformation("Specialized tools already configured in base kernel - using SpecializedStateMachine for execution");
         return kernel;
     }
 
