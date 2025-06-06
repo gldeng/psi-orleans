@@ -45,9 +45,13 @@ public record AgentFunctionInfo
     /// </summary>
     public static AgentFunctionInfo FromKernelFunctionMetadata(Microsoft.SemanticKernel.KernelFunctionMetadata metadata, string? pluginName = null, bool isAgentComm = false)
     {
+        // Store the full qualified name for proper tool resolution
+        // Format: PluginName.FunctionName (e.g., "Math.Add", "Tavily.search")
+        var fullName = !string.IsNullOrEmpty(pluginName) ? $"{pluginName}.{metadata.Name}" : metadata.Name;
+        
         return new AgentFunctionInfo
         {
-            Name = metadata.Name,
+            Name = fullName, // Store full qualified name instead of just function name
             Description = metadata.Description ?? string.Empty,
             ParameterNames = metadata.Parameters.Select(p => p.Name).ToList(),
             PluginName = pluginName,

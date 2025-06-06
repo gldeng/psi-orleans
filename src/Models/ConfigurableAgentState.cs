@@ -129,6 +129,13 @@ public class ConfigurableAgentState
     public Dictionary<string, object> CustomMetadata { get; set; } = new();
     
     /// <summary>
+    /// Original tool names requested during initialization (e.g., "Math.Add", "Tavily.search")
+    /// This preserves the exact names before kernel plugin transformation
+    /// </summary>
+    [Id(31)]
+    public List<string> OriginalToolNames { get; set; } = new();
+    
+    /// <summary>
     /// List of agents that this agent can call, with names and descriptions
     /// </summary>
     [Id(27)]

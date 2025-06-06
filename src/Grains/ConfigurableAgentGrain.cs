@@ -18,13 +18,24 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
 {
     private readonly IConfigurableKernelService _kernelService;
     private readonly ILogger<ConfigurableAgentGrain> _logger;
+    
+    // ====== Phase 2 Refactoring: State Machine Services ======
+    private readonly IStateMachineFactory _stateMachineFactory;
+    private readonly IAgentRoleConfigurator _roleConfigurator;
+    
     private ConfigurableAgentState _state = new();
     private Kernel? _kernel;
 
-    public ConfigurableAgentGrain(IConfigurableKernelService kernelService, ILogger<ConfigurableAgentGrain> logger)
+    public ConfigurableAgentGrain(
+        IConfigurableKernelService kernelService, 
+        ILogger<ConfigurableAgentGrain> logger,
+        IStateMachineFactory stateMachineFactory,
+        IAgentRoleConfigurator roleConfigurator)
     {
         _kernelService = kernelService;
         _logger = logger;
+        _stateMachineFactory = stateMachineFactory;
+        _roleConfigurator = roleConfigurator;
     }
 
     public override Task OnActivateAsync(CancellationToken cancellationToken)
@@ -95,8 +106,15 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
                 return (false, $"Configuration validation failed: {errorMessage}", _state.AgentId);
             }
 
-            // Create kernel with the provided configuration and unified tools
+            // Store the original tool names before kernel transformation
+            _state.OriginalToolNames = toolNames?.ToList() ?? new List<string>();
+            
+            // Create kernel with the specified tools
             _kernel = await _kernelService.CreateKernelAsync(configuration, toolNames);
+            if (_kernel == null)
+            {
+                return (false, "Failed to create kernel", string.Empty);
+            }
             
             // Store configuration in state
             _state.Configuration = configuration;
@@ -559,17 +577,17 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
                 return;
             }
 
-            // Get only the original tool names (exclude agent communication functions)
-            // Agent communication functions have the pattern "Call_*" so we filter them out
-            var originalToolNames = _state.AvailableFunctions
-                .Where(f => !f.IsAgentCommunicationFunction && !f.Name.StartsWith("Call_"))
-                .Select(f => f.Name)
+            // Get original tool names from the function metadata instead of extracting from kernel plugins
+            // This preserves the original format like "Math.Add", "Tavily.search" instead of "CustomFunctions.Add"
+            var originalToolNames = _state.OriginalToolNames
+                .Where(name => !string.IsNullOrEmpty(name)) // Filter out any empty names
                 .ToList();
-            
-            _logger.LogInformation("Recreating kernel with {OriginalCount} original tools", originalToolNames.Count);
 
-            // Recreate the kernel with only the original tools (that the service knows about)
-            _kernel = await _kernelService.CreateKernelAsync(_state.Configuration, originalToolNames);
+            _logger.LogDebug("Using {Count} original tool names: {Tools}", 
+                originalToolNames.Count, string.Join(", ", originalToolNames));
+
+            // Configure kernel with role-appropriate tools using original names
+            _kernel = await _roleConfigurator.ConfigureKernelAsync(_state.Role, _state.Configuration, originalToolNames);
 
             // Add agent communication functions as a separate plugin if they exist
             if (_state.AgentFunctionRegistry != null && _state.AgentFunctionRegistry.GetAgentFunctionCount() > 0)
@@ -889,50 +907,51 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
 
         try
         {
-            if (_state.Role == AgentRole.Orchestrator)
+            // ====== Phase 2 Refactoring: Use AgentRoleConfigurator ======
+            
+            // Get role-appropriate system prompt
+            var rolePrompt = _roleConfigurator.GetSystemPromptForRole(_state.Role, _state.Configuration.SystemPrompt);
+            
+            // Create role-specific configuration
+            var roleConfig = new AgentConfiguration
             {
-                // Create orchestrator kernel with limited tools
-                var orchestratorConfig = new AgentConfiguration
-                {
-                    AgentName = _state.Configuration.AgentName + "_Orchestrator",
-                    SystemPrompt = GetOrchestratorSystemPrompt(_state.Configuration.SystemPrompt),
-                    Temperature = _state.Configuration.Temperature,
-                    MaxTokens = _state.Configuration.MaxTokens
-                };
+                AgentName = _state.Configuration.AgentName + $"_{_state.Role}",
+                SystemPrompt = rolePrompt,
+                Temperature = _state.Configuration.Temperature,
+                MaxTokens = _state.Configuration.MaxTokens
+            };
 
-                // Orchestrator only gets agent communication tools (SendParentCallback, CreateAgent, CallChildAgent)
-                _kernel = await _kernelService.CreateKernelAsync(orchestratorConfig, new string[0]);
-                await SetupOrchestratorTools();
-            }
-            else if (_state.Role == AgentRole.Specialized)
-            {
-                // Create specialized kernel with normal tools but no agent creation tools
-                var specializedConfig = new AgentConfiguration
-                {
-                    AgentName = _state.Configuration.AgentName + "_Specialized",
-                    SystemPrompt = GetSpecializedSystemPrompt(_state.Configuration.SystemPrompt),
-                    Temperature = _state.Configuration.Temperature,
-                    MaxTokens = _state.Configuration.MaxTokens
-                };
+            // Get original tool names from the function metadata instead of extracting from kernel plugins
+            // This preserves the original format like "Math.Add", "Tavily.search" instead of "CustomFunctions.Add"
+            var originalToolNames = _state.OriginalToolNames
+                .Where(name => !string.IsNullOrEmpty(name)) // Filter out any empty names
+                .ToList();
 
-                // Specialized gets all normal tools except agent creation/calling tools
-                var availableTools = _kernelService.GetAllAvailableToolNames();
-                var specializedTools = availableTools.Where(tool => 
-                    !tool.Contains("CreateAgent") && 
-                    !tool.Contains("CallAgent") && 
-                    !tool.Contains("AgentCommunication")).ToList();
+            _logger.LogDebug("Using {Count} original tool names: {Tools}", 
+                originalToolNames.Count, string.Join(", ", originalToolNames));
 
-                _kernel = await _kernelService.CreateKernelAsync(specializedConfig, specializedTools);
-                await SetupSpecializedTools();
-            }
+            // Configure kernel with role-appropriate tools using original names
+            _kernel = await _roleConfigurator.ConfigureKernelAsync(_state.Role, roleConfig, originalToolNames);
 
-            _logger.LogInformation("Agent {AgentId} configured for role {Role}", _state.AgentId, _state.Role);
+            _logger.LogInformation("Agent {AgentId} configured for role {Role} using new role configurator", _state.AgentId, _state.Role);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error configuring agent {AgentId} for role {Role}", _state.AgentId, _state.Role);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Get current tool names for preservation during role configuration
+    /// </summary>
+    private IEnumerable<string> GetCurrentToolNames()
+    {
+        if (_kernel == null)
+            return new string[0];
+            
+        // Get existing tool names from current kernel to preserve them
+        return _kernel.Plugins.SelectMany(p => p.Select(f => $"{p.Name}.{f.Name}")).ToList();
     }
 
     private async Task<string> ExecuteAsOrchestratorAsync(string task)
@@ -959,7 +978,7 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
 
     private async Task<string> ExecuteAsSpecializedAsync(string task)
     {
-        _logger.LogInformation("Executing as Specialized agent for agent {AgentId}", _state.AgentId);
+        _logger.LogInformation("Executing as Specialized agent for agent {AgentId} using SpecializedStateMachine", _state.AgentId);
 
         if (_kernel == null || _state.Configuration == null)
         {
@@ -968,14 +987,15 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
 
         try
         {
-            // Execute with specialized tools (normal blocking tools)
-            var result = await _kernelService.ExecuteTaskAsync(_kernel, task, _state, _state.Configuration.SystemPrompt, waitForCompletion: false);
+            // ====== Phase 2 Refactoring: Use SpecializedStateMachine ======
             
-            // Send completion callback to parent if exists
-            if (!string.IsNullOrEmpty(_state.ParentAgentId))
-            {
-                await SendParentCallbackAsync(result, true);
-            }
+            // Get the specialized state machine from factory
+            var stateMachine = _stateMachineFactory.CreateStateMachine(_state.Role);
+            
+            // Execute using the new state machine pattern
+            var result = await stateMachine.ExecuteTaskAsync(task, _kernel, _state, _state.Configuration);
+            
+            _logger.LogInformation("SpecializedStateMachine completed execution for agent {AgentId}", _state.AgentId);
             
             return result;
         }

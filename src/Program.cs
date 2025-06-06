@@ -104,6 +104,17 @@ class Program
                         
                         // Register example service for demonstrations
                         services.AddSingleton<ConfigurableAgentExample>();
+                        
+                        // ====== Phase 2 Refactoring: State Machine Services ======
+                        
+                        // Register agent role configurator for role-based tool and prompt configuration
+                        services.AddSingleton<IAgentRoleConfigurator, AgentRoleConfigurator>();
+                        
+                        // Register specialized state machine for sync direct execution pattern
+                        services.AddSingleton<SpecializedStateMachine>();
+                        
+                        // Register state machine factory for role-based state machine selection
+                        services.AddSingleton<IStateMachineFactory, StateMachineFactory>();
                     });
             })
             .UseConsoleLifetime();
@@ -199,7 +210,7 @@ class Program
             Console.WriteLine($"🔍 Details: {ex.InnerException?.Message}");
         }
         
-        Console.WriteLine("\nPress any key to exit...");
-        Console.ReadKey();
+        // Console.WriteLine("\nPress any key to exit...");
+        // Console.ReadKey();
     }
 } 
