@@ -778,4 +778,450 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
             _logger.LogError(ex, "Error continuing execution after callbacks for agent {AgentId}", _state.AgentId);
         }
     }
+
+    public async Task<string> ProcessTaskAsync(string task, string? parentId = null)
+    {
+        _logger.LogInformation("Agent {AgentId} processing task: {Task} (Parent: {ParentId})", 
+            _state.AgentId, task, parentId ?? "none");
+
+        try
+        {
+            // Store task and parent info
+            _state.CurrentTask = task;
+            _state.ParentAgentId = parentId;
+
+            // Phase 1: Initial Analysis - Determine agent type
+            if (_state.Role == AgentRole.Undecided)
+            {
+                await AnalyzeTaskAndDetermineRoleAsync(task);
+            }
+
+            // Phase 2: Execute based on role
+            if (_state.Role == AgentRole.Orchestrator)
+            {
+                return await ExecuteAsOrchestratorAsync(task);
+            }
+            else if (_state.Role == AgentRole.Specialized)
+            {
+                return await ExecuteAsSpecializedAsync(task);
+            }
+            else
+            {
+                throw new InvalidOperationException($"Agent role {_state.Role} is not supported for task execution");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing task for agent {AgentId}", _state.AgentId);
+            
+            // Send failure callback to parent if exists
+            if (!string.IsNullOrEmpty(parentId))
+            {
+                await SendParentCallbackAsync($"Task failed: {ex.Message}", false);
+            }
+            
+            return $"Task processing failed: {ex.Message}";
+        }
+    }
+
+    private async Task AnalyzeTaskAndDetermineRoleAsync(string task)
+    {
+        _logger.LogInformation("Analyzing task complexity to determine agent role for {AgentId}", _state.AgentId);
+
+        try
+        {
+            if (_kernel == null)
+            {
+                throw new InvalidOperationException("Agent kernel is not initialized");
+            }
+
+            // Create analysis prompt
+            var analysisPrompt = $@"
+Analyze this task and determine if it should be handled as an ORCHESTRATOR (complex task requiring delegation) or SPECIALIZED (specific task requiring direct tools):
+
+Task: {task}
+
+Rules:
+- ORCHESTRATOR: Choose this if the task is complex, multi-step, requires coordination, or would benefit from breaking into subtasks
+- SPECIALIZED: Choose this if the task is specific, can be handled directly with available tools, or is a focused single-domain task
+
+Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
+
+            var chatService = _kernel.GetRequiredService<IChatCompletionService>();
+            var result = await chatService.GetChatMessageContentAsync(analysisPrompt);
+            
+            var decision = result.Content?.Trim().ToUpperInvariant();
+            
+            if (decision == "ORCHESTRATOR")
+            {
+                _state.Role = AgentRole.Orchestrator;
+                _logger.LogInformation("Agent {AgentId} determined to be ORCHESTRATOR for task analysis", _state.AgentId);
+            }
+            else if (decision == "SPECIALIZED")
+            {
+                _state.Role = AgentRole.Specialized;
+                _logger.LogInformation("Agent {AgentId} determined to be SPECIALIZED for task analysis", _state.AgentId);
+            }
+            else
+            {
+                // Default to specialized if unclear
+                _state.Role = AgentRole.Specialized;
+                _logger.LogWarning("Agent {AgentId} got unclear decision '{Decision}', defaulting to SPECIALIZED", _state.AgentId, decision);
+            }
+
+            // Switch system prompt and available tools based on role
+            await ConfigureAgentForRoleAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error analyzing task for agent {AgentId}, defaulting to Specialized", _state.AgentId);
+            _state.Role = AgentRole.Specialized;
+            await ConfigureAgentForRoleAsync();
+        }
+    }
+
+    private async Task ConfigureAgentForRoleAsync()
+    {
+        if (_kernel == null || _state.Configuration == null)
+        {
+            throw new InvalidOperationException("Agent is not properly initialized");
+        }
+
+        try
+        {
+            if (_state.Role == AgentRole.Orchestrator)
+            {
+                // Create orchestrator kernel with limited tools
+                var orchestratorConfig = new AgentConfiguration
+                {
+                    AgentName = _state.Configuration.AgentName + "_Orchestrator",
+                    SystemPrompt = GetOrchestratorSystemPrompt(_state.Configuration.SystemPrompt),
+                    Temperature = _state.Configuration.Temperature,
+                    MaxTokens = _state.Configuration.MaxTokens
+                };
+
+                // Orchestrator only gets agent communication tools (SendParentCallback, CreateAgent, CallChildAgent)
+                _kernel = await _kernelService.CreateKernelAsync(orchestratorConfig, new string[0]);
+                await SetupOrchestratorTools();
+            }
+            else if (_state.Role == AgentRole.Specialized)
+            {
+                // Create specialized kernel with normal tools but no agent creation tools
+                var specializedConfig = new AgentConfiguration
+                {
+                    AgentName = _state.Configuration.AgentName + "_Specialized",
+                    SystemPrompt = GetSpecializedSystemPrompt(_state.Configuration.SystemPrompt),
+                    Temperature = _state.Configuration.Temperature,
+                    MaxTokens = _state.Configuration.MaxTokens
+                };
+
+                // Specialized gets all normal tools except agent creation/calling tools
+                var availableTools = _kernelService.GetAllAvailableToolNames();
+                var specializedTools = availableTools.Where(tool => 
+                    !tool.Contains("CreateAgent") && 
+                    !tool.Contains("CallAgent") && 
+                    !tool.Contains("AgentCommunication")).ToList();
+
+                _kernel = await _kernelService.CreateKernelAsync(specializedConfig, specializedTools);
+                await SetupSpecializedTools();
+            }
+
+            _logger.LogInformation("Agent {AgentId} configured for role {Role}", _state.AgentId, _state.Role);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error configuring agent {AgentId} for role {Role}", _state.AgentId, _state.Role);
+            throw;
+        }
+    }
+
+    private async Task<string> ExecuteAsOrchestratorAsync(string task)
+    {
+        _logger.LogInformation("Executing as Orchestrator for agent {AgentId}", _state.AgentId);
+
+        if (_kernel == null || _state.Configuration == null)
+        {
+            throw new InvalidOperationException("Orchestrator agent is not properly configured");
+        }
+
+        try
+        {
+            // Execute with orchestrator tools only
+            var result = await _kernelService.ExecuteTaskAsync(_kernel, task, _state, _state.Configuration.SystemPrompt, waitForCompletion: true);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in orchestrator execution for agent {AgentId}", _state.AgentId);
+            throw;
+        }
+    }
+
+    private async Task<string> ExecuteAsSpecializedAsync(string task)
+    {
+        _logger.LogInformation("Executing as Specialized agent for agent {AgentId}", _state.AgentId);
+
+        if (_kernel == null || _state.Configuration == null)
+        {
+            throw new InvalidOperationException("Specialized agent is not properly configured");
+        }
+
+        try
+        {
+            // Execute with specialized tools (normal blocking tools)
+            var result = await _kernelService.ExecuteTaskAsync(_kernel, task, _state, _state.Configuration.SystemPrompt, waitForCompletion: false);
+            
+            // Send completion callback to parent if exists
+            if (!string.IsNullOrEmpty(_state.ParentAgentId))
+            {
+                await SendParentCallbackAsync(result, true);
+            }
+            
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in specialized execution for agent {AgentId}", _state.AgentId);
+            
+            // Send failure callback to parent if exists
+            if (!string.IsNullOrEmpty(_state.ParentAgentId))
+            {
+                await SendParentCallbackAsync($"Specialized task failed: {ex.Message}", false);
+            }
+            
+            throw;
+        }
+    }
+
+    // State machine orchestrator tools implementation
+
+    public async Task<bool> SendParentCallbackAsync(string message, bool isSuccess = true)
+    {
+        if (string.IsNullOrEmpty(_state.ParentAgentId))
+        {
+            _logger.LogWarning("Agent {AgentId} has no parent to send callback to", _state.AgentId);
+            return false;
+        }
+
+        try
+        {
+            var parentAgent = GrainFactory.GetGrain<IConfigurableAgentGrain>(_state.ParentAgentId);
+            var callId = Guid.NewGuid().ToString();
+            
+            await parentAgent.ReceiveCallbackAsync(callId, message, isSuccess);
+            
+            _logger.LogInformation("Sent callback to parent {ParentId} from agent {AgentId}: Success={Success}", 
+                _state.ParentAgentId, _state.AgentId, isSuccess);
+            
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error sending callback to parent {ParentId} from agent {AgentId}", 
+                _state.ParentAgentId, _state.AgentId);
+            return false;
+        }
+    }
+
+    public async Task<(bool Success, string Message)> CreateAgentAsync(string agentId, AgentConfiguration configuration, IEnumerable<string>? toolNames = null)
+    {
+        if (_state.Role != AgentRole.Orchestrator)
+        {
+            var errorMsg = $"Only Orchestrator agents can create child agents. Current role: {_state.Role}";
+            _logger.LogError(errorMsg);
+            return (false, errorMsg);
+        }
+
+        try
+        {
+            var childAgent = GrainFactory.GetGrain<IConfigurableAgentGrain>(agentId);
+            
+            // Initialize the child agent with configuration and tools
+            var initResult = await childAgent.InitializeAsync(configuration, toolNames);
+            
+            if (initResult.Success)
+            {
+                _state.ChildAgentIds.Add(agentId);
+                _logger.LogInformation("Agent {AgentId} created and initialized child agent {ChildId}", _state.AgentId, agentId);
+            }
+            else
+            {
+                _logger.LogError("Failed to initialize child agent {ChildId}: {Message}", agentId, initResult.Message);
+            }
+            
+            return (initResult.Success, initResult.Message);
+        }
+        catch (Exception ex)
+        {
+            var errorMsg = $"Failed to create child agent {agentId}: {ex.Message}";
+            _logger.LogError(ex, errorMsg);
+            return (false, errorMsg);
+        }
+    }
+
+    public async Task<string> CallChildAgentAsync(string childAgentId, string task)
+    {
+        if (_state.Role != AgentRole.Orchestrator)
+        {
+            throw new InvalidOperationException($"Only Orchestrator agents can call child agents. Current role: {_state.Role}");
+        }
+
+        try
+        {
+            var childAgent = GrainFactory.GetGrain<IConfigurableAgentGrain>(childAgentId);
+            var callId = Guid.NewGuid().ToString();
+            
+            // Process task on child agent (this will trigger callback)
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await childAgent.ProcessTaskAsync(task, _state.AgentId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error in child agent {ChildId} task processing", childAgentId);
+                    await ReceiveCallbackAsync(callId, $"Child task failed: {ex.Message}", false);
+                }
+            });
+            
+            _logger.LogInformation("Agent {AgentId} called child agent {ChildId} with task", 
+                _state.AgentId, childAgentId);
+                
+            return callId;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error calling child agent {ChildId} from agent {AgentId}", 
+                childAgentId, _state.AgentId);
+            throw;
+        }
+    }
+
+    // Helper methods for role configuration
+
+    private string GetOrchestratorSystemPrompt(string originalPrompt)
+    {
+        return $@"{originalPrompt}
+
+ORCHESTRATOR ROLE:
+You are now operating as an Orchestrator agent. Your role is to:
+1. Break down complex tasks into subtasks
+2. Create and coordinate child agents to handle subtasks
+3. Collect results from child agents and synthesize final responses
+
+AVAILABLE TOOLS:
+- SendParentCallback: Send completion/status updates to your parent agent
+- CreateAgent: Create new specialized child agents with specific configurations
+- CallChildAgent: Delegate subtasks to child agents
+
+You CANNOT use normal blocking tools. You must delegate actual work to specialized child agents.
+Focus on orchestration, coordination, and task breakdown.";
+    }
+
+    private string GetSpecializedSystemPrompt(string originalPrompt)
+    {
+        return $@"{originalPrompt}
+
+SPECIALIZED ROLE:
+You are now operating as a Specialized agent. Your role is to:
+1. Handle specific, focused tasks directly using available tools
+2. Complete tasks efficiently without further delegation
+3. Report results back to your parent when tasks are complete
+
+AVAILABLE TOOLS:
+- All normal blocking tools for your specialization
+- SendParentCallback: Send completion/status updates to your parent agent
+
+You CANNOT create or call other agents. Focus on direct task execution using your specialized tools.";
+    }
+
+    private async Task SetupOrchestratorTools()
+    {
+        if (_kernel == null)
+        {
+            throw new InvalidOperationException("Kernel is not initialized");
+        }
+
+        try
+        {
+            // Add orchestrator-specific tools
+            var orchestratorFunctions = new List<KernelFunction>
+            {
+                KernelFunctionFactory.CreateFromMethod(
+                    (string message, bool isSuccess) => SendParentCallbackAsync(message, isSuccess),
+                    "SendParentCallback",
+                    "Send a callback message to the parent agent"),
+                    
+                KernelFunctionFactory.CreateFromMethod(
+                    async (string agentId, string systemPrompt, string tools) => 
+                    {
+                        var config = new AgentConfiguration
+                        {
+                            AgentName = agentId,
+                            SystemPrompt = systemPrompt,
+                            Temperature = 0.1,
+                            MaxTokens = 4000
+                        };
+                        var toolList = tools.Split(',', StringSplitOptions.RemoveEmptyEntries);
+                        return await CreateAgentAsync(agentId, config, toolList);
+                    },
+                    "CreateAgent", 
+                    "Create a new child agent with specified system prompt and tools"),
+                    
+                KernelFunctionFactory.CreateFromMethod(
+                    (string childId, string task) => CallChildAgentAsync(childId, task),
+                    "CallChildAgent",
+                    "Call a child agent to process a subtask")
+            };
+
+            var orchestratorPlugin = KernelPluginFactory.CreateFromFunctions(
+                "Orchestrator",
+                "Orchestrator tools for agent coordination",
+                orchestratorFunctions);
+
+            _kernel.Plugins.Add(orchestratorPlugin);
+            
+            _logger.LogInformation("Orchestrator tools configured for agent {AgentId}", _state.AgentId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error setting up orchestrator tools for agent {AgentId}", _state.AgentId);
+            throw;
+        }
+    }
+
+    private async Task SetupSpecializedTools()
+    {
+        if (_kernel == null)
+        {
+            throw new InvalidOperationException("Kernel is not initialized");
+        }
+
+        try
+        {
+            // Add the SendParentCallback tool for specialized agents
+            var specializedFunctions = new List<KernelFunction>
+            {
+                KernelFunctionFactory.CreateFromMethod(
+                    (string message, bool isSuccess) => SendParentCallbackAsync(message, isSuccess),
+                    "SendParentCallback",
+                    "Send a callback message to the parent agent")
+            };
+
+            var specializedPlugin = KernelPluginFactory.CreateFromFunctions(
+                "SpecializedAgent",
+                "Specialized agent tools",
+                specializedFunctions);
+
+            _kernel.Plugins.Add(specializedPlugin);
+            
+            _logger.LogInformation("Specialized tools configured for agent {AgentId}", _state.AgentId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error setting up specialized tools for agent {AgentId}", _state.AgentId);
+            throw;
+        }
+    }
 } 

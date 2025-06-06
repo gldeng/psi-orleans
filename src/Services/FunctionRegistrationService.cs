@@ -205,18 +205,18 @@ public class FunctionRegistrationService
             var agentCreationService = serviceProvider.GetRequiredService<AgentCreationService>();
             
             var agentProxyService = new AgentProxyService(_clusterClient, agentProxyLogger, agentCreationService);
+            //
+            // _functionRegistry.RegisterFunction("AgentProxy.WebSearchAgent", 
+            //     KernelFunctionFactory.CreateFromMethod(
+            //         agentProxyService.WebSearchAgentAsync,
+            //         "WebSearchAgent",
+            //         "Delegates web search tasks to the specialized Web Search Agent (Agent B). Pass natural language queries about finding web data."));
 
-            _functionRegistry.RegisterFunction("AgentProxy.WebSearchAgent", 
-                KernelFunctionFactory.CreateFromMethod(
-                    agentProxyService.WebSearchAgentAsync,
-                    "WebSearchAgent",
-                    "Delegates web search tasks to the specialized Web Search Agent (Agent B). Pass natural language queries about finding web data."));
-
-            _functionRegistry.RegisterFunction("AgentProxy.MathAgent", 
-                KernelFunctionFactory.CreateFromMethod(
-                    agentProxyService.MathAgentAsync,
-                    "MathAgent",
-                    "Delegates mathematical calculation tasks to the specialized Math Agent (Agent C). Pass natural language queries about calculations."));
+            // _functionRegistry.RegisterFunction("AgentProxy.MathAgent", 
+            //     KernelFunctionFactory.CreateFromMethod(
+            //         agentProxyService.MathAgentAsync,
+            //         "MathAgent",
+            //         "Delegates mathematical calculation tasks to the specialized Math Agent (Agent C). Pass natural language queries about calculations."));
 
             _functionRegistry.RegisterFunction("AgentProxy.CallAgent", 
                 KernelFunctionFactory.CreateFromMethod(

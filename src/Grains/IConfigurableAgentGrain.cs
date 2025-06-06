@@ -33,6 +33,16 @@ public interface IConfigurableAgentGrain : IGrainWithStringKey
         IEnumerable<string>? toolNames);
     
     /// <summary>
+    /// Process a task following the state machine protocol
+    /// Analyzes task complexity and determines whether to become Orchestrator or Specialized agent
+    /// This is the main entry point for task processing in the state machine design
+    /// </summary>
+    /// <param name="task">Task to process</param>
+    /// <param name="parentId">ID of the parent agent (if any)</param>
+    /// <returns>Task processing result</returns>
+    Task<string> ProcessTaskAsync(string task, string? parentId = null);
+    
+    /// <summary>
     /// Execute a task using the configured prompt and tools
     /// </summary>
     /// <param name="task">Task to execute</param>
@@ -163,4 +173,31 @@ public interface IConfigurableAgentGrain : IGrainWithStringKey
     /// <param name="isSuccess">Whether the call was successful</param>
     /// <returns>Task completion</returns>
     Task ReceiveCallbackAsync(string callId, string message, bool isSuccess);
+    
+    // State machine orchestrator tools
+    
+    /// <summary>
+    /// Send a callback to the parent agent (available to both Orchestrator and Specialized agents)
+    /// </summary>
+    /// <param name="message">Message to send to parent</param>
+    /// <param name="isSuccess">Whether the task was completed successfully</param>
+    /// <returns>Success status</returns>
+    Task<bool> SendParentCallbackAsync(string message, bool isSuccess = true);
+    
+    /// <summary>
+    /// Create a new child agent (available only to Orchestrator agents)
+    /// </summary>
+    /// <param name="agentId">ID for the new agent</param>
+    /// <param name="configuration">Configuration for the new agent</param>
+    /// <param name="toolNames">Tools available to the new agent</param>
+    /// <returns>Success status and agent creation result</returns>
+    Task<(bool Success, string Message)> CreateAgentAsync(string agentId, AgentConfiguration configuration, IEnumerable<string>? toolNames = null);
+    
+    /// <summary>
+    /// Call a child agent with a task (available only to Orchestrator agents)
+    /// </summary>
+    /// <param name="childAgentId">ID of the child agent to call</param>
+    /// <param name="task">Task to send to the child agent</param>
+    /// <returns>Call ID for tracking the callback</returns>
+    Task<string> CallChildAgentAsync(string childAgentId, string task);
 } 
