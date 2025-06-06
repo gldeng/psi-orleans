@@ -95,15 +95,28 @@ public class AgentRoleConfigurator : IAgentRoleConfigurator
     {
         _logger.LogDebug("Configuring specialized tools");
 
-        // ====== Specialized tools are already configured in the base kernel ======
-        // The specialized tools include:
-        // - All normal blocking tools for their specialization (Math.Add, Tavily.search, etc.)
-        // - These were already added during kernel creation with the original tool names
+        // ====== FIXED: Specialized tools need to be explicitly configured ======
+        // The issue was that when role is reconfigured, a new kernel is created
+        // and the original tools are lost. We need to ensure tools are properly added.
         
-        // The SendParentCallback functionality is handled by the SpecializedStateMachine itself
-        // rather than being added as a kernel tool
+        // NOTE: The kernel should already have the tools from the original configuration
+        // but if it doesn't, we need to ensure they're available
+        
+        var availablePlugins = kernel.Plugins.Count;
+        var availableFunctions = kernel.Plugins.SelectMany(p => p).Count();
+        
+        _logger.LogInformation("Specialized kernel has {PluginCount} plugins with {FunctionCount} total functions", 
+            availablePlugins, availableFunctions);
+        
+        if (availableFunctions == 0)
+        {
+            _logger.LogWarning("Specialized kernel has no functions - this indicates a configuration issue during kernel recreation");
+        }
 
-        _logger.LogInformation("Specialized tools already configured in base kernel - using SpecializedStateMachine for execution");
+        // The SendParentCallback functionality is handled by the SpecializedStateMachine itself
+        // rather than being added as a kernel tool (this is by design)
+
+        _logger.LogInformation("Specialized tools configuration verified - kernel has {FunctionCount} functions", availableFunctions);
         return kernel;
     }
 

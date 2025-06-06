@@ -48,8 +48,8 @@ class Program
             // Get the Orleans client
             var client = host.Services.GetRequiredService<IClusterClient>();
 
-            // Run the hierarchical agent system test
-            await RunHierarchicalAgentTest_Specialized(client);
+            // Run the hierarchical agent system test - SWITCHED TO FULL ORCHESTRATOR TESTING
+            await RunHierarchicalAgentTest(client);
         }
         catch (Exception ex)
         {
@@ -112,6 +112,9 @@ class Program
                         
                         // Register specialized state machine for sync direct execution pattern
                         services.AddSingleton<SpecializedStateMachine>();
+                        
+                        // Register orchestrator state machine for async event-driven execution pattern
+                        services.AddSingleton<OrchestratorStateMachine>();
                         
                         // Register state machine factory for role-based state machine selection
                         services.AddSingleton<IStateMachineFactory, StateMachineFactory>();

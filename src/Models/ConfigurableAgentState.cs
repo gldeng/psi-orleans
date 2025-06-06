@@ -159,6 +159,24 @@ public class ConfigurableAgentState
     [Id(30)]
     public Dictionary<string, object> WorkingMemory { get; set; } = new();
     
+    /// <summary>
+    /// Pending callbacks from child agents (for Orchestrator role)
+    /// </summary>
+    [Id(32)]
+    public Dictionary<string, CallbackData> PendingCallbacks { get; set; } = new();
+    
+    /// <summary>
+    /// Completed callbacks for historical tracking (for Orchestrator role)
+    /// </summary>
+    [Id(33)]
+    public List<CompletedCallback> CompletedCallbacks { get; set; } = new();
+    
+    /// <summary>
+    /// Current subtasks being managed by this orchestrator
+    /// </summary>
+    [Id(34)]
+    public List<SubTask> CurrentSubTasks { get; set; } = new();
+    
     // Non-serialized field for agent function registry
     [NonSerialized]
     private IAgentFunctionRegistry? _agentFunctionRegistry;
@@ -258,6 +276,46 @@ public class ConfigurableAgentState
     /// </summary>
     public double GetSuccessRate()
     {
-        return TotalTasks == 0 ? 0.0 : (double)SuccessfulTasks / TotalTasks * 100.0;
+        if (TotalTasks == 0) return 0.0;
+        return (double)SuccessfulTasks / TotalTasks;
+    }
+    
+    /// <summary>
+    /// Add a pending callback for tracking child agent responses (Orchestrator role)
+    /// </summary>
+    /// <param name="callId">Unique callback identifier</param>
+    /// <param name="callbackData">Callback data to track</param>
+    public void AddPendingCallback(string callId, CallbackData callbackData)
+    {
+        PendingCallbacks[callId] = callbackData;
+        LastUpdated = DateTime.UtcNow;
+    }
+    
+    /// <summary>
+    /// Complete a pending callback and move it to completed history (Orchestrator role)
+    /// </summary>
+    /// <param name="callId">Callback identifier to complete</param>
+    public void CompletePendingCallback(string callId)
+    {
+        if (PendingCallbacks.TryGetValue(callId, out var callbackData))
+        {
+            // Move to completed callbacks
+            var completedCallback = new CompletedCallback
+            {
+                CallId = callbackData.CallId,
+                ChildAgentId = callbackData.ChildAgentId,
+                Task = callbackData.Task,
+                ResultMessage = callbackData.ResultMessage ?? string.Empty,
+                IsSuccess = callbackData.IsSuccess,
+                CompletedAt = DateTime.UtcNow,
+                ExecutionTime = callbackData.ReceivedAt.HasValue 
+                    ? callbackData.ReceivedAt.Value - callbackData.CreatedAt 
+                    : TimeSpan.Zero
+            };
+            
+            CompletedCallbacks.Add(completedCallback);
+            PendingCallbacks.Remove(callId);
+            LastUpdated = DateTime.UtcNow;
+        }
     }
 } 

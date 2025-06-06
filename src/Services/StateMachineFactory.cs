@@ -23,7 +23,7 @@ public class StateMachineFactory : IStateMachineFactory
     {
         return role switch
         {
-            AgentRole.Orchestrator => throw new NotImplementedException("OrchestratorStateMachine will be implemented in Phase 3"),
+            AgentRole.Orchestrator => _serviceProvider.GetRequiredService<OrchestratorStateMachine>(),
             AgentRole.Specialized => _serviceProvider.GetRequiredService<SpecializedStateMachine>(),
             AgentRole.Undecided => _serviceProvider.GetRequiredService<SpecializedStateMachine>(), // Default to specialized
             _ => throw new ArgumentException($"Unsupported agent role: {role}")

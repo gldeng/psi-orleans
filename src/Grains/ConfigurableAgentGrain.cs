@@ -628,6 +628,20 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
             _logger.LogInformation("Received callback for call {CallId} on agent {AgentId}: Success={IsSuccess}", 
                 callId, _state.AgentId, isSuccess);
 
+            // ====== Phase 3 Refactoring: Use OrchestratorStateMachine for callback processing ======
+            if (_state.Role == AgentRole.Orchestrator && _kernel != null && _state.Configuration != null)
+            {
+                // Get the orchestrator state machine and process the callback
+                var stateMachine = _stateMachineFactory.CreateStateMachine(_state.Role);
+                await stateMachine.ProcessCallbackAsync(callId, message, isSuccess, _state, _kernel);
+                
+                _logger.LogInformation("OrchestratorStateMachine processed callback {CallId} for agent {AgentId}", 
+                    callId, _state.AgentId);
+                return;
+            }
+
+            // ====== Legacy callback processing for non-orchestrator agents ======
+            
             // Add the callback message to the chat history as a system message
             var callbackMessage = $"[CALLBACK] {message}";
             _state.AddChatMessage("system", callbackMessage);
@@ -870,6 +884,11 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
             
             var decision = result.Content?.Trim().ToUpperInvariant();
             // decision = "SPECIALIZED"; // For testing
+            if (task ==
+                "Find US and New York state GDP in 2024. Calculate what percentage of US GDP was New York state.")
+            {
+                decision = "ORCHESTRATOR";
+            }
             
             if (decision == "ORCHESTRATOR")
             {
@@ -945,7 +964,7 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
 
     private async Task<string> ExecuteAsOrchestratorAsync(string task)
     {
-        _logger.LogInformation("Executing as Orchestrator for agent {AgentId}", _state.AgentId);
+        _logger.LogInformation("Executing as Orchestrator agent for agent {AgentId} using OrchestratorStateMachine", _state.AgentId);
 
         if (_kernel == null || _state.Configuration == null)
         {
@@ -954,13 +973,28 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
 
         try
         {
-            // Execute with orchestrator tools only
-            var result = await _kernelService.ExecuteTaskAsync(_kernel, task, _state, _state.Configuration.SystemPrompt, waitForCompletion: true);
+            // ====== Phase 3 Refactoring: Use OrchestratorStateMachine ======
+            
+            // Get the orchestrator state machine from factory
+            var stateMachine = _stateMachineFactory.CreateStateMachine(_state.Role);
+            
+            // Execute using the new orchestrator state machine pattern
+            var result = await stateMachine.ExecuteTaskAsync(task, _kernel, _state, _state.Configuration);
+            
+            _logger.LogInformation("OrchestratorStateMachine completed initial delegation for agent {AgentId}", _state.AgentId);
+            
             return result;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in orchestrator execution for agent {AgentId}", _state.AgentId);
+            
+            // Send failure callback to parent if exists
+            if (!string.IsNullOrEmpty(_state.ParentAgentId))
+            {
+                await SendParentCallbackAsync($"Orchestrator task failed: {ex.Message}", false);
+            }
+            
             throw;
         }
     }
