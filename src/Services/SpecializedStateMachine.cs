@@ -101,13 +101,17 @@ public class SpecializedStateMachine : IAgentStateMachine
         
         try
         {
+            // Debug: Check available tools in kernel
+            var availableTools = kernel.Plugins.SelectMany(p => p.Select(f => $"{p.Name}.{f.Name}")).ToList();
+            _logger.LogInformation("SpecializedStateMachine available tools: {Tools}", string.Join(", ", availableTools));
+            
             // Get chat completion service
             var chatService = kernel.GetRequiredService<IChatCompletionService>();
             
             // Configure execution settings for automatic tool calling
             var executionSettings = new OpenAIPromptExecutionSettings
             {
-                ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions, // Enable automatic tool calling
+                ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions, // Enable automatic tool calling
                 MaxTokens = config.MaxTokens,
                 Temperature = config.Temperature
             };
@@ -116,10 +120,23 @@ public class SpecializedStateMachine : IAgentStateMachine
             var chatHistory = new ChatHistory();
             if (!string.IsNullOrEmpty(config.SystemPrompt))
             {
-                chatHistory.AddSystemMessage(config.SystemPrompt);
+                // Enhanced system prompt to force tool usage
+                var enhancedPrompt = config.SystemPrompt + 
+                    "\n\nIMPORTANT: You MUST use the available tools.";
+                
+                chatHistory.AddSystemMessage(enhancedPrompt);
+                _logger.LogInformation("Added enhanced system prompt: {Prompt}", enhancedPrompt);
             }
-            chatHistory.AddUserMessage(task);
+            
+            // Enhanced user message to force tool usage
+            var enhancedTask = task + 
+                "\n\nREQUIREMENT: You must use the available tool functions.";
+            
+            chatHistory.AddUserMessage(enhancedTask);
+            _logger.LogInformation("Added enhanced user message: {Task}", enhancedTask);
 
+            _logger.LogInformation("Executing ChatCompletion with AutoInvokeKernelFunctions...");
+            
             // Execute with automatic tool calling - LLM will call tools as needed
             var result = await chatService.GetChatMessageContentAsync(
                 chatHistory,
@@ -128,6 +145,7 @@ public class SpecializedStateMachine : IAgentStateMachine
 
             var response = result.Content ?? "Task completed successfully.";
             
+            _logger.LogInformation("Automatic LLM tool calling result: {Result}", response);
             _logger.LogDebug("Automatic LLM tool calling completed for agent {AgentId}", state.AgentId);
             
             return response;

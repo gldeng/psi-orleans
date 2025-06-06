@@ -869,6 +869,7 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
             var result = await chatService.GetChatMessageContentAsync(analysisPrompt);
             
             var decision = result.Content?.Trim().ToUpperInvariant();
+            // decision = "SPECIALIZED"; // For testing
             
             if (decision == "ORCHESTRATOR")
             {
