@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
 using Orleans;
 using PsiOrleans.Grains;
 using PsiOrleans.Models;
@@ -91,17 +93,50 @@ public class SpecializedStateMachine : IAgentStateMachine
 
     /// <summary>
     /// Execute task with direct tool usage - the core sync execution pattern.
-    /// Uses existing kernel service with waitForCompletion = false for linear execution.
+    /// Uses direct LLM tool calling for optimal performance and simplicity.
     /// </summary>
     private async Task<string> ExecuteWithDirectTools(string task, Kernel kernel, ConfigurableAgentState state, AgentConfiguration config)
     {
-        _logger.LogDebug("Executing task with direct tools for agent {AgentId}", state.AgentId);
+        _logger.LogDebug("Executing task with automatic LLM tool calling for agent {AgentId}", state.AgentId);
         
-        // Use existing kernel service execution with specialized agent configuration
-        // waitForCompletion = false ensures linear, synchronous execution pattern
-        var result = await _kernelService.ExecuteTaskAsync(kernel, task, state, config.SystemPrompt, waitForCompletion: false);
-        
-        return result;
+        try
+        {
+            // Get chat completion service
+            var chatService = kernel.GetRequiredService<IChatCompletionService>();
+            
+            // Configure execution settings for automatic tool calling
+            var executionSettings = new OpenAIPromptExecutionSettings
+            {
+                ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions, // Enable automatic tool calling
+                MaxTokens = config.MaxTokens,
+                Temperature = config.Temperature
+            };
+
+            // Create chat history starting with system prompt and user task
+            var chatHistory = new ChatHistory();
+            if (!string.IsNullOrEmpty(config.SystemPrompt))
+            {
+                chatHistory.AddSystemMessage(config.SystemPrompt);
+            }
+            chatHistory.AddUserMessage(task);
+
+            // Execute with automatic tool calling - LLM will call tools as needed
+            var result = await chatService.GetChatMessageContentAsync(
+                chatHistory,
+                executionSettings, 
+                kernel);
+
+            var response = result.Content ?? "Task completed successfully.";
+            
+            _logger.LogDebug("Automatic LLM tool calling completed for agent {AgentId}", state.AgentId);
+            
+            return response;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in automatic tool calling execution for agent {AgentId}", state.AgentId);
+            throw;
+        }
     }
 
     /// <summary>
