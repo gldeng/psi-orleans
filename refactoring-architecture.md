@@ -283,10 +283,17 @@ sequenceDiagram
         else Decision: Wait for More Callbacks
             OrcSM->>OrcSM: WaitForMoreCallbacks(state)
             Note over OrcSM: Continue waiting, no action needed
-        else Decision: Create Additional Tasks (Future)
+        else Decision: Create Additional Tasks
             OrcSM->>OrcSM: CreateAdditionalTasks(state, kernel)
-            Note over OrcSM: Generate new subtasks based on progress
-            Note over OrcSM: (Deferred to later version)
+            Note over OrcSM: Analyze progress gaps and generate new subtasks
+            OrcSM->>OrcSM: AnalyzeProgressGaps(state, kernel)
+            OrcSM->>OrcSM: GenerateAdditionalSubtasks(gaps, kernel)
+            OrcSM->>CommHandler: CreateChildAgentAsync(newChildId, config)
+            CommHandler-->>OrcSM: New child agent created
+            OrcSM->>CommHandler: CallChildAgentAsync(newChildId, newSubtask)
+            CommHandler-->>OrcSM: New callId returned
+            OrcSM->>OrcSM: AddPendingCallback(newCallId)
+            Note over OrcSM: Additional tasks delegated, continue orchestration
         end
         
     else Role is Specialized
@@ -657,15 +664,156 @@ public class OrchestratorStateMachine : IAgentStateMachine
 
     private async Task CreateAdditionalTasks(UnifiedAgentState state, Kernel kernel)
     {
-        // Future feature: Generate additional subtasks based on progress
-        // Use LLM to identify gaps or needed follow-up tasks
-        throw new NotImplementedException("Deferred to later version");
+        // Essential feature: Generate additional subtasks based on progress analysis
+        var progressGaps = await AnalyzeProgressGaps(state, kernel);
+        
+        if (progressGaps.Any())
+        {
+            var additionalSubTasks = await GenerateAdditionalSubtasks(progressGaps, kernel, state);
+            
+            foreach (var subTask in additionalSubTasks)
+            {
+                // Create new child agent for additional task
+                var childAgentId = $"{state.AgentId}_additional_{Guid.NewGuid():N}";
+                await _communicationHandler.CreateChildAgentAsync(childAgentId, subTask.Configuration);
+                state.ChildAgentIds.Add(childAgentId);
+                
+                // Delegate the additional task
+                var callId = await _communicationHandler.CallChildAgentAsync(childAgentId, subTask.Task);
+                state.AddPendingCallback(callId, new CallbackData 
+                { 
+                    ChildAgentId = childAgentId, 
+                    Task = subTask.Task,
+                    CreatedAt = DateTime.UtcNow
+                });
+                
+                _logger.LogInformation("Created additional task for agent {ChildId}: {Task}", 
+                    childAgentId, subTask.Task);
+            }
+        }
+    }
+
+    private async Task<List<ProgressGap>> AnalyzeProgressGaps(UnifiedAgentState state, Kernel kernel)
+    {
+        // Use LLM to analyze completed results and identify what's missing
+        var completedResults = state.PendingCallbacks.Values
+            .Where(cb => cb.IsCompleted)
+            .Select(cb => cb.Result)
+            .ToList();
+
+        var promptText = $@"
+Analyze the following completed task results and the original task to identify any gaps or follow-up tasks needed:
+
+Original Task: {state.CurrentTask}
+
+Completed Results:
+{string.Join("\n", completedResults.Select((r, i) => $"{i + 1}. {r}"))}
+
+Identify any gaps, missing information, or follow-up tasks that would improve the overall result.
+Return a JSON array of objects with 'description' and 'reasoning' fields for each gap found.
+";
+
+        var gapAnalysis = await kernel.InvokePromptAsync(promptText);
+        return ParseProgressGaps(gapAnalysis.ToString());
+    }
+
+    private async Task<List<SubTask>> GenerateAdditionalSubtasks(List<ProgressGap> gaps, Kernel kernel, UnifiedAgentState state)
+    {
+        // Use LLM to convert progress gaps into actionable subtasks
+        var gapsText = string.Join("\n", gaps.Select(g => $"- {g.Description}: {g.Reasoning}"));
+        
+        var promptText = $@"
+Based on the following identified gaps in the task completion, generate specific subtasks to address them:
+
+Original Task: {state.CurrentTask}
+Identified Gaps:
+{gapsText}
+
+Generate specific, actionable subtasks that would address these gaps.
+Return a JSON array of objects with 'task', 'priority', and 'estimatedComplexity' fields.
+";
+
+        var subtasksResponse = await kernel.InvokePromptAsync(promptText);
+        return ParseAdditionalSubtasks(subtasksResponse.ToString());
+    }
+
+    private List<ProgressGap> ParseProgressGaps(string gapAnalysisJson)
+    {
+        // Parse the LLM response into ProgressGap objects
+        // Implementation would use JSON parsing with error handling
+        try
+        {
+            return JsonSerializer.Deserialize<List<ProgressGap>>(gapAnalysisJson) ?? new List<ProgressGap>();
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning("Failed to parse gap analysis JSON: {Error}", ex.Message);
+            return new List<ProgressGap>();
+        }
+    }
+
+    private List<SubTask> ParseAdditionalSubtasks(string subtasksJson)
+    {
+        // Parse the LLM response into SubTask objects
+        // Implementation would use JSON parsing with error handling
+        try
+        {
+            return JsonSerializer.Deserialize<List<SubTask>>(subtasksJson) ?? new List<SubTask>();
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning("Failed to parse additional subtasks JSON: {Error}", ex.Message);
+            return new List<SubTask>();
+        }
     }
 
     private async Task<string> AggregateResultsWithLLM(UnifiedAgentState state, Kernel kernel)
     {
         // Use LLM to intelligently combine all child results into coherent final result
+        var allResults = state.PendingCallbacks.Values
+            .Where(cb => cb.IsCompleted && cb.IsSuccess)
+            .Select(cb => cb.Result)
+            .ToList();
+
+        var promptText = $@"
+Aggregate the following task results into a coherent final response for the original task:
+
+Original Task: {state.CurrentTask}
+
+Child Results:
+{string.Join("\n", allResults.Select((r, i) => $"{i + 1}. {r}"))}
+
+Provide a comprehensive, well-structured final result that incorporates all relevant information.
+";
+
+        var aggregatedResult = await kernel.InvokePromptAsync(promptText);
+        return aggregatedResult.ToString();
     }
+}
+
+// Additional Model Classes for CreateAdditionalTasks functionality
+public class ProgressGap
+{
+    public string Description { get; set; } = string.Empty;
+    public string Reasoning { get; set; } = string.Empty;
+}
+
+public class SubTask
+{
+    public string Task { get; set; } = string.Empty;
+    public string Priority { get; set; } = string.Empty;
+    public int EstimatedComplexity { get; set; }
+    public AgentConfiguration Configuration { get; set; } = new();
+}
+
+public class CallbackData
+{
+    public string ChildAgentId { get; set; } = string.Empty;
+    public string Task { get; set; } = string.Empty;
+    public string Result { get; set; } = string.Empty;
+    public bool IsCompleted { get; set; }
+    public bool IsSuccess { get; set; }
+    public DateTime CreatedAt { get; set; }
 }
 ```
 
@@ -777,4 +925,3 @@ public class StateMachineFactory : IStateMachineFactory
         };
     }
 }
-```
