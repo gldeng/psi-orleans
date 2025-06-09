@@ -174,6 +174,13 @@ public interface IConfigurableAgentGrain : IGrainWithStringKey
     /// <returns>Task completion</returns>
     Task ReceiveCallbackAsync(string callId, string message, bool isSuccess);
     
+    /// <summary>
+    /// Get current state information for monitoring and debugging.
+    /// Returns structured information about current subtasks, callbacks, and progress.
+    /// </summary>
+    /// <returns>State information for monitoring</returns>
+    Task<string> GetStateInfoAsync();
+    
     // State machine orchestrator tools
     
     /// <summary>

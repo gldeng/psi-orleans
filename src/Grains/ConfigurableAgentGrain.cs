@@ -8,6 +8,7 @@ using PsiOrleans.Models;
 using PsiOrleans.Services;
 using System.Threading.Tasks;
 using System.Threading;
+using System.Text;
 
 namespace PsiOrleans.Grains;
 
@@ -884,11 +885,6 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
             
             var decision = result.Content?.Trim().ToUpperInvariant();
             // decision = "SPECIALIZED"; // For testing
-            if (task ==
-                "Find US and New York state GDP in 2024. Calculate what percentage of US GDP was New York state.")
-            {
-                decision = "ORCHESTRATOR";
-            }
             
             if (decision == "ORCHESTRATOR")
             {
@@ -1138,6 +1134,90 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
             _logger.LogError(ex, "Error calling child agent {ChildId} from agent {AgentId}", 
                 childAgentId, _state.AgentId);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Get current state information for monitoring and debugging.
+    /// Provides detailed view of subtasks, callbacks, and orchestration progress.
+    /// </summary>
+    public Task<string> GetStateInfoAsync()
+    {
+        try
+        {
+            var stateInfo = new StringBuilder();
+            stateInfo.AppendLine($"Agent ID: {_state.AgentId}");
+            stateInfo.AppendLine($"Role: {_state.Role}");
+            stateInfo.AppendLine($"Current Task: {_state.CurrentTask}");
+            stateInfo.AppendLine();
+            
+            // SubTasks information
+            if (_state.CurrentSubTasks.Count > 0)
+            {
+                stateInfo.AppendLine($"Current SubTasks ({_state.CurrentSubTasks.Count}):");
+                for (int i = 0; i < _state.CurrentSubTasks.Count; i++)
+                {
+                    var subTask = _state.CurrentSubTasks[i];
+                    stateInfo.AppendLine($"  {i + 1}. [{subTask.Status}] {subTask.Task}");
+                    stateInfo.AppendLine($"     SubTask ID: {subTask.SubTaskId}");
+                    stateInfo.AppendLine($"     Priority: {subTask.Priority}");
+                    if (subTask.RequiredTools.Count > 0)
+                    {
+                        stateInfo.AppendLine($"     Required Tools: {string.Join(", ", subTask.RequiredTools)}");
+                    }
+                    if (!string.IsNullOrEmpty(subTask.ChildAgentId))
+                    {
+                        stateInfo.AppendLine($"     Child Agent: {subTask.ChildAgentId}");
+                    }
+                }
+                stateInfo.AppendLine();
+            }
+            
+            // Pending Callbacks
+            if (_state.PendingCallbacks.Count > 0)
+            {
+                stateInfo.AppendLine($"Pending Callbacks ({_state.PendingCallbacks.Count}):");
+                foreach (var callback in _state.PendingCallbacks.Values)
+                {
+                    stateInfo.AppendLine($"  CallID: {callback.CallId}");
+                    stateInfo.AppendLine($"  Child: {callback.ChildAgentId}");
+                    stateInfo.AppendLine($"  Task: {callback.Task}");
+                    stateInfo.AppendLine($"  Created: {callback.CreatedAt:HH:mm:ss}");
+                    stateInfo.AppendLine();
+                }
+            }
+            
+            // Completed Callbacks
+            if (_state.CompletedCallbacks.Count > 0)
+            {
+                stateInfo.AppendLine($"Completed Callbacks ({_state.CompletedCallbacks.Count}):");
+                foreach (var callback in _state.CompletedCallbacks)
+                {
+                    var status = callback.IsSuccess ? "✅" : "❌";
+                    stateInfo.AppendLine($"  {status} {callback.Task}");
+                    var result = callback.ResultMessage.Length > 150 ? callback.ResultMessage.Substring(0, 150) + "..." : callback.ResultMessage;
+                    stateInfo.AppendLine($"     Result: {result}");
+                    stateInfo.AppendLine($"     Completed: {callback.CompletedAt:HH:mm:ss}");
+                    stateInfo.AppendLine();
+                }
+            }
+            
+            // Child Agents
+            if (_state.ChildAgentIds.Count > 0)
+            {
+                stateInfo.AppendLine($"Child Agents ({_state.ChildAgentIds.Count}):");
+                foreach (var childId in _state.ChildAgentIds)
+                {
+                    stateInfo.AppendLine($"  - {childId}");
+                }
+                stateInfo.AppendLine();
+            }
+            
+            return Task.FromResult(stateInfo.ToString());
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult($"Error getting state info: {ex.Message}");
         }
     }
 } 

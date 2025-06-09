@@ -107,6 +107,7 @@ public class OrchestratorStateMachine : IAgentStateMachine
             _logger.LogError(ex, "Error processing callback {CallId} for agent {AgentId}", callId, state.AgentId);
             throw;
         }
+
     }
 
     /// <summary>
