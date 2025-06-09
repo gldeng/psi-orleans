@@ -540,12 +540,55 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
 
             _logger.LogDebug("Regular function {FunctionName} executed successfully", functionCall.FunctionName);
         }
+        catch (HttpRequestException httpEx) when (httpEx.Message.Contains("432"))
+        {
+            _logger.LogWarning("Tavily API usage limit exceeded for function {FunctionName}: {Error}", 
+                functionCall.FunctionName, httpEx.Message);
+            
+            var usageLimitMessage = $"Tavily search service is temporarily unavailable (usage limit reached). " +
+                $"The search request could not be completed at this time. " +
+                $"Consider upgrading your Tavily plan or trying again later.";
+            
+            AddFunctionResultToChatHistory(chatHistory, functionCall, usageLimitMessage);
+        }
+        catch (HttpRequestException httpEx)
+        {
+            _logger.LogWarning("HTTP error executing function {FunctionName}: {Error}", 
+                functionCall.FunctionName, httpEx.Message);
+            
+            var httpErrorMessage = $"Web service error: {httpEx.Message}. " +
+                $"The external service is currently unavailable. Please try again later.";
+            
+            AddFunctionResultToChatHistory(chatHistory, functionCall, httpErrorMessage);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error executing regular function {FunctionName}", functionCall.FunctionName);
-            var errorMessage = $"Function execution failed: {ex.Message}";
+            
+            // Provide more specific error messages for known function types
+            string errorMessage;
+            if (functionCall.PluginName?.Equals("Tavily", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                errorMessage = $"Search function error: {ex.Message}. Web search is temporarily unavailable.";
+            }
+            else if (functionCall.PluginName?.Equals("Math", StringComparison.OrdinalIgnoreCase) == true ||
+                     functionCall.PluginName?.Equals("MathematicalOperations", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                errorMessage = $"Mathematical calculation error: {ex.Message}. Please check your input parameters.";
+            }
+            else
+            {
+                errorMessage = $"Function execution failed: {ex.Message}";
+            }
+            
             AddErrorToChatHistory(chatHistory, functionCall, errorMessage);
-            throw;
+            
+            // Don't re-throw for service errors - we want to continue with graceful degradation
+            // Only re-throw for critical system errors
+            if (ex is not HttpRequestException && ex is not TimeoutException)
+            {
+                throw;
+            }
         }
     }
 

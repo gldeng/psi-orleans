@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
+using Microsoft.SemanticKernel.Connectors.AzureOpenAI;
 using Orleans;
 using PsiOrleans.Grains;
 using PsiOrleans.Models;
@@ -219,17 +220,41 @@ public class SpecializedStateMachine : IAgentStateMachine
             // Get chat completion service
             var chatService = kernel.GetRequiredService<IChatCompletionService>();
             
-            // Configure execution settings for automatic tool calling
-            var executionSettings = new OpenAIPromptExecutionSettings
+            // Configure execution settings for automatic tool calling based on AI service type
+            PromptExecutionSettings executionSettings;
+            int maxTokens = config.MaxTokens;
+            double temperature = config.Temperature;
+            
+            if (config.Model.IsAzureOpenAI)
             {
-                ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions, // Enable automatic tool calling
-                MaxTokens = config.MaxTokens,
-                Temperature = config.Temperature
-            };
+                executionSettings = new AzureOpenAIPromptExecutionSettings
+                {
+                    ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions, // Enable automatic tool calling
+                    MaxTokens = maxTokens,
+                    Temperature = temperature,
+                    
+                    // Azure OpenAI specific settings
+                    TopP = 1.0,
+                    FrequencyPenalty = 0.0,
+                    PresencePenalty = 0.0,
+                    ResponseFormat = "text"
+                };
+                _logger.LogInformation("🔧 Using Azure OpenAI execution settings for direct tools - AgentId: {AgentId}", state.AgentId);
+            }
+            else
+            {
+                executionSettings = new OpenAIPromptExecutionSettings
+                {
+                    ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions, // Enable automatic tool calling
+                    MaxTokens = maxTokens,
+                    Temperature = temperature
+                };
+                _logger.LogInformation("🔧 Using OpenAI execution settings for direct tools - AgentId: {AgentId}", state.AgentId);
+            }
 
             // 📊 TASK_INFO: Log execution settings
             _logger.LogInformation("📊 TASK_INFO: LLM Execution Settings - Agent: {AgentId}, MaxTokens: {MaxTokens}, Temperature: {Temperature}, ToolCallBehavior: {ToolBehavior}", 
-                state.AgentId, executionSettings.MaxTokens, executionSettings.Temperature, "AutoInvokeKernelFunctions");
+                state.AgentId, maxTokens, temperature, "AutoInvokeKernelFunctions");
 
             // Create chat history starting with system prompt and user task
             var chatHistory = new ChatHistory();

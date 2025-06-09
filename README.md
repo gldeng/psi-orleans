@@ -267,13 +267,84 @@ Using GPT-4o-mini provides:
 
 ## 📝 Environment Variables
 
-Required environment variables:
+The project supports both **OpenAI** and **Azure OpenAI** services. Configure one of the following:
+
+### 🔹 OpenAI Configuration
+
 ```bash
-# OpenAI API Key (required)
+# OpenAI API Key (required for OpenAI)
 export OPENAI_API_KEY='your-openai-api-key'
 
 # Optional: Custom model (defaults to gpt-4o-mini)
 export OPENAI_MODEL='gpt-4o-mini'
+```
+
+### 🔹 Azure OpenAI Configuration
+
+```bash
+# Azure OpenAI Configuration (all required for Azure OpenAI)
+export AZURE_OPENAI_API_KEY='your-azure-openai-api-key'
+export AZURE_OPENAI_ENDPOINT='https://your-resource.openai.azure.com/'
+export AZURE_OPENAI_DEPLOYMENT_NAME='your-deployment-name'
+
+# Optional: API version (defaults to latest)
+export AZURE_OPENAI_API_VERSION='2024-10-21'
+```
+
+### 🚀 Quick Setup
+
+1. **Copy the example configuration:**
+   ```bash
+   cp env_setup.sh env_setup_local.sh
+   ```
+
+2. **Edit `env_setup_local.sh` with your credentials:**
+   ```bash
+   # For OpenAI:
+   export OPENAI_API_KEY='sk-your-actual-key-here'
+   
+   # OR for Azure OpenAI (uncomment and configure):
+   # export AZURE_OPENAI_API_KEY='your-azure-key'
+   # export AZURE_OPENAI_ENDPOINT='https://your-resource.openai.azure.com/'
+   # export AZURE_OPENAI_DEPLOYMENT_NAME='gpt-4o-mini'
+   ```
+
+3. **Load the configuration:**
+   ```bash
+   source env_setup_local.sh
+   ```
+
+### 🔗 Getting API Access
+
+- **OpenAI:** Get your API key from [OpenAI Platform](https://platform.openai.com/api-keys)
+- **Azure OpenAI:** Request access through [Azure OpenAI Service](https://azure.microsoft.com/en-us/products/ai-services/openai-service)
+
+### 💡 Configuration in Code
+
+You can also configure AI services programmatically:
+
+```csharp
+// OpenAI Configuration
+var openAIConfig = new AgentConfiguration
+{
+    Model = new ModelConfiguration
+    {
+        ModelId = "gpt-4o-mini",
+        ApiKey = "your-openai-key"
+    }
+};
+
+// Azure OpenAI Configuration  
+var azureConfig = new AgentConfiguration
+{
+    Model = new ModelConfiguration
+    {
+        DeploymentName = "gpt-4o-mini",
+        Endpoint = "https://your-resource.openai.azure.com/",
+        ApiKey = "your-azure-key",
+        ApiVersion = "2024-10-21"  // Optional
+    }
+};
 ```
 
 ## 📝 License

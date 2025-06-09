@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
+using Microsoft.SemanticKernel.Connectors.AzureOpenAI;
 using Microsoft.Extensions.DependencyInjection;
 using PsiOrleans.Models;
 using PsiOrleans.Services;
@@ -770,13 +771,37 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
             var chatService = _kernel.GetRequiredService<IChatCompletionService>();
             var chatHistory = _state.ToSemanticKernelChatHistory();
 
-            // Configure execution settings
-            var executionSettings = new OpenAIPromptExecutionSettings
+            // Configure execution settings based on AI service type
+            PromptExecutionSettings executionSettings;
+            int maxTokens = _state.Configuration?.MaxTokens ?? 4000;
+            double temperature = _state.Configuration?.Temperature ?? 0.1;
+            
+            if (_state.Configuration?.Model.IsAzureOpenAI == true)
             {
-                ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions,
-                MaxTokens = _state.Configuration?.MaxTokens ?? 4000,
-                Temperature = _state.Configuration?.Temperature ?? 0.1
-            };
+                executionSettings = new AzureOpenAIPromptExecutionSettings
+                {
+                    ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions,
+                    MaxTokens = maxTokens,
+                    Temperature = temperature,
+                    
+                    // Azure OpenAI specific settings
+                    TopP = 1.0,
+                    FrequencyPenalty = 0.0,
+                    PresencePenalty = 0.0,
+                    ResponseFormat = "text"
+                };
+                _logger.LogInformation("🔧 Using Azure OpenAI execution settings for callback continuation - AgentId: {AgentId}", _state.AgentId);
+            }
+            else
+            {
+                executionSettings = new OpenAIPromptExecutionSettings
+                {
+                    ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions,
+                    MaxTokens = maxTokens,
+                    Temperature = temperature
+                };
+                _logger.LogInformation("🔧 Using OpenAI execution settings for callback continuation - AgentId: {AgentId}", _state.AgentId);
+            }
 
             // Get LLM response now that all callback results are in chat history
             var result = await chatService.GetChatMessageContentAsync(

@@ -21,7 +21,12 @@ public enum OrchestrationDecision
     /// <summary>
     /// Need to create additional subtasks based on current progress
     /// </summary>
-    CreateAdditionalTasks
+    CreateAdditionalTasks,
+    
+    /// <summary>
+    /// Retry subtasks that failed due to timeouts
+    /// </summary>
+    RetryTimeouts
 }
 
 /// <summary>

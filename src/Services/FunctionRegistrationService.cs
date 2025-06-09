@@ -302,18 +302,38 @@ public class FunctionRegistrationService
                 var searchFunction = KernelFunctionFactory.CreateFromMethod(
                     async (string query) => 
                     {
-                        var searchResults = await tavilySearch.SearchAsync(query);
-                        var results = new List<string>();
-                        
-                        await foreach (var result in searchResults.Results)
+                        try
                         {
-                            results.Add(result);
+                            var searchResults = await tavilySearch.SearchAsync(query);
+                            var results = new List<string>();
+                            
+                            await foreach (var result in searchResults.Results)
+                            {
+                                results.Add(result);
+                            }
+                            
+                            if (results.Count == 0)
+                            {
+                                return $"No search results found for query: {query}";
+                            }
+                            
+                            return string.Join("\n\n", results);
                         }
-                        
-                        return string.Join("\n\n", results);
+                        catch (HttpRequestException httpEx) when (httpEx.Message.Contains("432"))
+                        {
+                            return $"Tavily search temporarily unavailable (usage limit reached). Query: '{query}' - Please try again later or consider upgrading your Tavily plan.";
+                        }
+                        catch (HttpRequestException httpEx)
+                        {
+                            return $"Tavily search service error for query '{query}': {httpEx.Message}. Please try again later.";
+                        }
+                        catch (Exception ex)
+                        {
+                            return $"Search function error for query '{query}': {ex.Message}. Unable to complete web search at this time.";
+                        }
                     },
                     "Search",
-                    "Search the web for information using Tavily");
+                    "Search the web for information using Tavily. Note: May have usage limits.");
                 
                 var tavilyPlugin = KernelPluginFactory.CreateFromFunctions("Tavily", "Tavily web search", [searchFunction]);
                 _functionRegistry.RegisterPlugin("Tavily", tavilyPlugin);

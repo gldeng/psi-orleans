@@ -25,20 +25,47 @@ class Program
         Console.WriteLine("📊 Task: Complex GDP analysis using hierarchical task delegation");
         Console.WriteLine();
 
-        // Check for OpenAI API key
+        // Check for AI service configuration (OpenAI or Azure OpenAI)
         var openAiApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        if (string.IsNullOrEmpty(openAiApiKey))
+        var azureOpenAiApiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
+        var azureOpenAiEndpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
+        var azureOpenAiDeployment = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME");
+
+        bool hasOpenAI = !string.IsNullOrEmpty(openAiApiKey);
+        bool hasAzureOpenAI = !string.IsNullOrEmpty(azureOpenAiApiKey) && 
+                              !string.IsNullOrEmpty(azureOpenAiEndpoint) && 
+                              !string.IsNullOrEmpty(azureOpenAiDeployment);
+
+        if (!hasOpenAI && !hasAzureOpenAI)
         {
-            Console.WriteLine("❌ Error: OPENAI_API_KEY environment variable is not set.");
-            Console.WriteLine("📝 Please set your OpenAI API key:");
-            Console.WriteLine("   export OPENAI_API_KEY='your-api-key-here'");
+            Console.WriteLine("❌ Error: No AI service configuration found.");
+            Console.WriteLine("📝 Please configure either OpenAI or Azure OpenAI:");
             Console.WriteLine();
-            Console.WriteLine("💡 You can get an API key from: https://platform.openai.com/api-keys");
+            Console.WriteLine("🔹 For OpenAI:");
+            Console.WriteLine("   export OPENAI_API_KEY='your-openai-api-key-here'");
+            Console.WriteLine("💡 Get an OpenAI API key from: https://platform.openai.com/api-keys");
+            Console.WriteLine();
+            Console.WriteLine("🔹 For Azure OpenAI:");
+            Console.WriteLine("   export AZURE_OPENAI_API_KEY='your-azure-openai-api-key'");
+            Console.WriteLine("   export AZURE_OPENAI_ENDPOINT='https://your-resource.openai.azure.com/'");
+            Console.WriteLine("   export AZURE_OPENAI_DEPLOYMENT_NAME='your-deployment-name'");
+            Console.WriteLine("💡 Get Azure OpenAI access from: https://azure.microsoft.com/en-us/products/ai-services/openai-service");
+            Console.WriteLine();
+            Console.WriteLine("📋 You can also set these in env_setup.sh and run: source env_setup.sh");
             return;
         }
 
-        Console.WriteLine("✅ OpenAI API key found");
-        Console.WriteLine($"🤖 Using GPT-4o-mini for hierarchical AI reasoning");
+        if (hasAzureOpenAI)
+        {
+            Console.WriteLine("✅ Azure OpenAI configuration found");
+            Console.WriteLine($"🔗 Endpoint: {azureOpenAiEndpoint}");
+            Console.WriteLine($"🚀 Deployment: {azureOpenAiDeployment}");
+        }
+        else if (hasOpenAI)
+        {
+            Console.WriteLine("✅ OpenAI API key found");
+            Console.WriteLine($"🤖 Using OpenAI for hierarchical AI reasoning");
+        }
         Console.WriteLine();
 
         // Build and start the Orleans host with Semantic Kernel integration
@@ -54,7 +81,7 @@ class Program
             var client = host.Services.GetRequiredService<IClusterClient>();
 
             // Run the hierarchical agent system test - SWITCHED TO FULL ORCHESTRATOR TESTING
-            await RunHierarchicalAgentTest(client);
+            await RunHierarchicalAgentTest(client, hasOpenAI, hasAzureOpenAI, openAiApiKey, azureOpenAiApiKey, azureOpenAiEndpoint, azureOpenAiDeployment);
         }
         catch (Exception ex)
         {
@@ -118,6 +145,20 @@ class Program
                         logging.AddConsole();
                         logging.SetMinimumLevel(LogLevel.Information);
                     })
+                    // Configure Orleans server messaging timeouts for long-running operations
+                    .Configure<Orleans.Configuration.SiloMessagingOptions>(options =>
+                    {
+                        // Increase response timeout for long-running operations (e.g., external API calls)
+                        options.ResponseTimeout = TimeSpan.FromMinutes(8); // 8 minutes for server-side operations
+                        options.ResponseTimeoutWithDebugger = TimeSpan.FromMinutes(8); // Same timeout when debugging
+                    })
+                    // Configure Orleans client messaging options for client-to-grain calls
+                    .Configure<Orleans.Configuration.ClientMessagingOptions>(options =>
+                    {
+                        // Response timeout for client calls to grains
+                        options.ResponseTimeout = TimeSpan.FromMinutes(8); // 8 minutes for client-side operations
+                        options.ResponseTimeoutWithDebugger = TimeSpan.FromMinutes(8); // Same timeout when debugging
+                    })
                     // Enable Orleans OpenTelemetry integration
                     .AddActivityPropagation()
                     .ConfigureServices(services =>
@@ -162,7 +203,7 @@ class Program
     /// Test the hierarchical agent system with complex orchestration.
     /// Enhanced to monitor orchestration progress and show complete dependency execution flow.
     /// </summary>
-    private static async Task RunHierarchicalAgentTest(IClusterClient client)
+    private static async Task RunHierarchicalAgentTest(IClusterClient client, bool hasOpenAI, bool hasAzureOpenAI, string? openAiApiKey, string? azureOpenAiApiKey, string? azureOpenAiEndpoint, string? azureOpenAiDeployment)
     {
         Console.WriteLine("🚀 Starting Orleans hierarchical agent system test...");
         Console.WriteLine();
@@ -178,13 +219,39 @@ class Program
             // Get the root hierarchical agent
             var rootAgent = client.GetGrain<IConfigurableAgentGrain>("root-agent");
             
+            // Create model configuration based on detected AI service
+            ModelConfiguration modelConfig;
+            if (hasAzureOpenAI)
+            {
+                // Use Azure OpenAI configuration
+                modelConfig = new ModelConfiguration
+                {
+                    DeploymentName = azureOpenAiDeployment,
+                    Endpoint = azureOpenAiEndpoint,
+                    ApiKey = azureOpenAiApiKey,
+                    ApiVersion = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_VERSION")
+                };
+                Console.WriteLine($"🔧 Configured agent to use Azure OpenAI: {azureOpenAiDeployment}");
+            }
+            else
+            {
+                // Use standard OpenAI configuration
+                modelConfig = new ModelConfiguration
+                {
+                    ModelId = "gpt-4o-mini",
+                    ApiKey = openAiApiKey
+                };
+                Console.WriteLine($"🔧 Configured agent to use OpenAI: gpt-4o-mini");
+            }
+            
             // Initialize the agent first with comprehensive tools for hierarchical processing
             var config = new AgentConfiguration
             {
                 AgentName = "RootHierarchicalAgent",
                 SystemPrompt = "You are a hierarchical AI agent that can analyze complex tasks and decide whether to handle them directly or delegate to specialized child agents.",
                 Temperature = 0.1f,
-                MaxTokens = 4000
+                MaxTokens = 4000,
+                Model = modelConfig
             };
             
             // Initialize with tools that might be needed for orchestration and delegation

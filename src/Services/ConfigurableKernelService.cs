@@ -1,6 +1,7 @@
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
+using Microsoft.SemanticKernel.Connectors.AzureOpenAI;
 using Microsoft.Extensions.Logging;
 using PsiOrleans.Models;
 using System.Text.Json;
@@ -37,28 +38,8 @@ public class ConfigurableKernelService : IConfigurableKernelService
 
             var builder = Kernel.CreateBuilder();
 
-            // Get API key (from config or environment)
-            var apiKey = configuration.Model.ApiKey ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-            if (string.IsNullOrEmpty(apiKey))
-            {
-                throw new InvalidOperationException(
-                    "OpenAI API key is required. Set OPENAI_API_KEY environment variable or provide in configuration.");
-            }
-
-            // Add OpenAI chat completion service
-            if (!string.IsNullOrEmpty(configuration.Model.BaseUrl))
-            {
-                builder.AddOpenAIChatCompletion(
-                    modelId: configuration.Model.ModelId,
-                    apiKey: apiKey,
-                    httpClient: new HttpClient { BaseAddress = new Uri(configuration.Model.BaseUrl) });
-            }
-            else
-            {
-                builder.AddOpenAIChatCompletion(
-                    modelId: configuration.Model.ModelId,
-                    apiKey: apiKey);
-            }
+            // Configure AI service based on model type (OpenAI vs Azure OpenAI)
+            await ConfigureAIServiceAsync(builder, configuration);
 
             // Register kernel plugins by name
             if (pluginNames != null && pluginNames.Any())
@@ -99,7 +80,7 @@ public class ConfigurableKernelService : IConfigurableKernelService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error creating kernel for agent: {AgentName}", configuration.AgentName);
+            _logger.LogError(ex, "Failed to create kernel for agent: {AgentName}", configuration.AgentName);
             throw;
         }
     }
@@ -114,32 +95,12 @@ public class ConfigurableKernelService : IConfigurableKernelService
 
             var builder = Kernel.CreateBuilder();
 
-            // Get API key (from config or environment)
-            var apiKey = configuration.Model.ApiKey ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-            if (string.IsNullOrEmpty(apiKey))
-            {
-                throw new InvalidOperationException(
-                    "OpenAI API key is required. Set OPENAI_API_KEY environment variable or provide in configuration.");
-            }
-
-            // Add OpenAI chat completion service
-            if (!string.IsNullOrEmpty(configuration.Model.BaseUrl))
-            {
-                builder.AddOpenAIChatCompletion(
-                    modelId: configuration.Model.ModelId,
-                    apiKey: apiKey,
-                    httpClient: new HttpClient { BaseAddress = new Uri(configuration.Model.BaseUrl) });
-            }
-            else
-            {
-                builder.AddOpenAIChatCompletion(
-                    modelId: configuration.Model.ModelId,
-                    apiKey: apiKey);
-            }
+            // Configure AI service based on model type (OpenAI vs Azure OpenAI)
+            await ConfigureAIServiceAsync(builder, configuration);
 
             if (toolNames != null && toolNames.Any())
             {
-                // Get all tools by qualified names
+                // Get tools by qualified names using existing registry method
                 var tools = _functionRegistry.GetToolsByQualifiedNames(toolNames);
                 
                 // Group tools by their source (individual functions vs plugin functions)
@@ -207,8 +168,79 @@ public class ConfigurableKernelService : IConfigurableKernelService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error creating kernel for agent: {AgentName}", configuration.AgentName);
+            _logger.LogError(ex, "Failed to create kernel for agent: {AgentName}", configuration.AgentName);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Configure AI service (OpenAI or Azure OpenAI) based on model configuration
+    /// </summary>
+    private async Task ConfigureAIServiceAsync(IKernelBuilder builder, AgentConfiguration configuration)
+    {
+        // Get API key (from config or environment)
+        string? apiKey;
+        
+        if (configuration.Model.IsAzureOpenAI)
+        {
+            // Azure OpenAI configuration
+            apiKey = configuration.Model.ApiKey ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
+            var endpoint = configuration.Model.Endpoint ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
+            var deploymentName = configuration.Model.DeploymentName ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME");
+
+            if (string.IsNullOrEmpty(apiKey))
+            {
+                throw new InvalidOperationException(
+                    "Azure OpenAI API key is required. Set AZURE_OPENAI_API_KEY environment variable or provide in configuration.");
+            }
+
+            if (string.IsNullOrEmpty(endpoint))
+            {
+                throw new InvalidOperationException(
+                    "Azure OpenAI endpoint is required. Set AZURE_OPENAI_ENDPOINT environment variable or provide in configuration.");
+            }
+
+            if (string.IsNullOrEmpty(deploymentName))
+            {
+                throw new InvalidOperationException(
+                    "Azure OpenAI deployment name is required. Set AZURE_OPENAI_DEPLOYMENT_NAME environment variable or provide in configuration.");
+            }
+
+            _logger.LogInformation("Configuring Azure OpenAI: Endpoint={Endpoint}, Deployment={DeploymentName}", 
+                endpoint, deploymentName);
+
+            builder.AddAzureOpenAIChatCompletion(
+                deploymentName: deploymentName,
+                endpoint: endpoint,
+                apiKey: apiKey);
+        }
+        else
+        {
+            // Standard OpenAI configuration
+            apiKey = configuration.Model.ApiKey ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+            
+            if (string.IsNullOrEmpty(apiKey))
+            {
+                throw new InvalidOperationException(
+                    "OpenAI API key is required. Set OPENAI_API_KEY environment variable or provide in configuration.");
+            }
+
+            _logger.LogInformation("Configuring OpenAI: ModelId={ModelId}", configuration.Model.ModelId);
+
+            // Add OpenAI chat completion service
+            if (!string.IsNullOrEmpty(configuration.Model.BaseUrl))
+            {
+                builder.AddOpenAIChatCompletion(
+                    modelId: configuration.Model.ModelId,
+                    apiKey: apiKey,
+                    httpClient: new HttpClient { BaseAddress = new Uri(configuration.Model.BaseUrl) });
+            }
+            else
+            {
+                builder.AddOpenAIChatCompletion(
+                    modelId: configuration.Model.ModelId,
+                    apiKey: apiKey);
+            }
         }
     }
 
@@ -275,21 +307,58 @@ public class ConfigurableKernelService : IConfigurableKernelService
             // 🔄 FLOW_STEP: Configuring LLM execution settings
             _logger.LogInformation("🔄 FLOW_STEP: Configuring LLM execution settings - AgentId: {AgentId}", state.AgentId);
             
-            var executionSettings = new OpenAIPromptExecutionSettings
-            {
-                // Enable function calling but don't auto-invoke - we'll handle manually
-                ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions,
-                MaxTokens = state.Configuration?.MaxTokens ?? 4000,
-                Temperature = state.Configuration?.Temperature ?? 0.1
-            };
+            // Use appropriate execution settings based on AI service type
+            PromptExecutionSettings executionSettings;
+            int maxTokens = state.Configuration?.MaxTokens ?? 4000;
+            double temperature = state.Configuration?.Temperature ?? 0.1;
             
-            executionSettingsActivity?.SetTag("execution_settings.max_tokens", executionSettings.MaxTokens);
-            executionSettingsActivity?.SetTag("execution_settings.temperature", executionSettings.Temperature);
+            if (state.Configuration?.Model.IsAzureOpenAI == true)
+            {
+                var azureSettings = new AzureOpenAIPromptExecutionSettings
+                {
+                    // Core Azure OpenAI settings
+                    ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions,
+                    MaxTokens = maxTokens,
+                    Temperature = temperature,
+                    
+                    // Azure OpenAI specific settings
+                    TopP = 1.0, // Nucleus sampling parameter
+                    FrequencyPenalty = 0.0, // Reduce repetition
+                    PresencePenalty = 0.0, // Encourage topic diversity
+                    
+                    // Optional: Set response format (can be overridden per call)
+                    ResponseFormat = "text", // or "json_object" for structured responses
+                    
+                    // Optional: Set seed for reproducible outputs (useful for testing)
+                    // Seed = 42,
+                    
+                    // Optional: Set stop sequences
+                    // StopSequences = new[] { "\n\n", "END" }
+                };
+                executionSettings = azureSettings;
+                _logger.LogInformation("🔧 Using Azure OpenAI execution settings - AgentId: {AgentId}, MaxTokens: {MaxTokens}, Temperature: {Temperature}, TopP: {TopP}", 
+                    state.AgentId, maxTokens, temperature, azureSettings.TopP);
+            }
+            else
+            {
+                var openAISettings = new OpenAIPromptExecutionSettings
+                {
+                    // Enable function calling but don't auto-invoke - we'll handle manually
+                    ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions,
+                    MaxTokens = maxTokens,
+                    Temperature = temperature
+                };
+                executionSettings = openAISettings;
+                _logger.LogInformation("🔧 Using OpenAI execution settings - AgentId: {AgentId}", state.AgentId);
+            }
+            
+            executionSettingsActivity?.SetTag("execution_settings.max_tokens", maxTokens);
+            executionSettingsActivity?.SetTag("execution_settings.temperature", temperature);
             executionSettingsActivity?.SetTag("execution_settings.tool_call_behavior", "EnableKernelFunctions");
             
             // ✅ FLOW_SUCCESS: Execution settings configured
             _logger.LogInformation("✅ FLOW_SUCCESS: Execution settings configured - AgentId: {AgentId}, MaxTokens: {MaxTokens}, Temperature: {Temperature}", 
-                state.AgentId, executionSettings.MaxTokens, executionSettings.Temperature);
+                state.AgentId, maxTokens, temperature);
             
             AgentTracingService.SetSuccess(executionSettingsActivity, "Execution settings configured for LLM");
 
@@ -304,7 +373,7 @@ public class ConfigurableKernelService : IConfigurableKernelService
             
             // 📊 TASK_INFO: Log detailed LLM request information
             _logger.LogInformation("📊 TASK_INFO: LLM Request Details - Agent: {AgentId}, Task: '{Task}', System Prompt Length: {SystemPromptLength}, Max Tokens: {MaxTokens}, Temperature: {Temperature}, Available Functions: {FunctionCount}", 
-                state.AgentId, task.Length > 200 ? task.Substring(0, 200) + "..." : task, systemPrompt.Length, executionSettings.MaxTokens, executionSettings.Temperature, kernel.Plugins.SelectMany(p => p).Count());
+                state.AgentId, task.Length > 200 ? task.Substring(0, 200) + "..." : task, systemPrompt.Length, maxTokens, temperature, kernel.Plugins.SelectMany(p => p).Count());
             
             var llmStartTime = DateTime.UtcNow;
             var result = await chatService.GetChatMessageContentAsync(
@@ -699,16 +768,47 @@ public class ConfigurableKernelService : IConfigurableKernelService
             // Phase 2: Configure execution settings
             using var executionSettingsActivity = AgentTracingService.StartKernelActivity("ConfigureConversationExecutionSettings", state.AgentId);
             
-            var executionSettings = new OpenAIPromptExecutionSettings
-            {
-                // Enable function calling but don't auto-invoke - we'll handle manually
-                ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions,
-                MaxTokens = state.Configuration?.MaxTokens ?? 4000,
-                Temperature = state.Configuration?.Temperature ?? 0.1
-            };
+            // Use appropriate execution settings based on AI service type
+            PromptExecutionSettings executionSettings;
+            int maxTokens = state.Configuration?.MaxTokens ?? 4000;
+            double temperature = state.Configuration?.Temperature ?? 0.1;
             
-            executionSettingsActivity?.SetTag("execution_settings.max_tokens", executionSettings.MaxTokens);
-            executionSettingsActivity?.SetTag("execution_settings.temperature", executionSettings.Temperature);
+            if (state.Configuration?.Model.IsAzureOpenAI == true)
+            {
+                var azureSettings = new AzureOpenAIPromptExecutionSettings
+                {
+                    // Core Azure OpenAI settings
+                    ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions,
+                    MaxTokens = maxTokens,
+                    Temperature = temperature,
+                    
+                    // Azure OpenAI specific settings
+                    TopP = 1.0, // Nucleus sampling parameter
+                    FrequencyPenalty = 0.0, // Reduce repetition
+                    PresencePenalty = 0.0, // Encourage topic diversity
+                    
+                    // Optional: Set response format (can be overridden per call)
+                    ResponseFormat = "text", // or "json_object" for structured responses
+                };
+                executionSettings = azureSettings;
+                _logger.LogInformation("🔧 Using Azure OpenAI execution settings for conversation - AgentId: {AgentId}, MaxTokens: {MaxTokens}, Temperature: {Temperature}", 
+                    state.AgentId, maxTokens, temperature);
+            }
+            else
+            {
+                var openAISettings = new OpenAIPromptExecutionSettings
+                {
+                    // Enable function calling but don't auto-invoke - we'll handle manually
+                    ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions,
+                    MaxTokens = maxTokens,
+                    Temperature = temperature
+                };
+                executionSettings = openAISettings;
+                _logger.LogInformation("🔧 Using OpenAI execution settings for conversation - AgentId: {AgentId}", state.AgentId);
+            }
+            
+            executionSettingsActivity?.SetTag("execution_settings.max_tokens", maxTokens);
+            executionSettingsActivity?.SetTag("execution_settings.temperature", temperature);
             executionSettingsActivity?.SetTag("execution_settings.tool_call_behavior", "EnableKernelFunctions");
             AgentTracingService.SetSuccess(executionSettingsActivity, "Execution settings configured for conversation");
 
@@ -968,11 +1068,37 @@ public class ConfigurableKernelService : IConfigurableKernelService
                 return (false, "Model ID cannot be empty");
             }
 
-            // Check for API key
-            var apiKey = configuration.Model.ApiKey ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-            if (string.IsNullOrEmpty(apiKey))
+            // Validate API key based on configuration type
+            if (configuration.Model.IsAzureOpenAI)
             {
-                return (false, "OpenAI API key is required");
+                // Azure OpenAI validation
+                var azureApiKey = configuration.Model.ApiKey ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
+                var azureEndpoint = configuration.Model.Endpoint ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
+                var azureDeployment = configuration.Model.DeploymentName ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME");
+
+                if (string.IsNullOrEmpty(azureApiKey))
+                {
+                    return (false, "Azure OpenAI API key is required. Set AZURE_OPENAI_API_KEY environment variable or provide in configuration.");
+                }
+
+                if (string.IsNullOrEmpty(azureEndpoint))
+                {
+                    return (false, "Azure OpenAI endpoint is required. Set AZURE_OPENAI_ENDPOINT environment variable or provide in configuration.");
+                }
+
+                if (string.IsNullOrEmpty(azureDeployment))
+                {
+                    return (false, "Azure OpenAI deployment name is required. Set AZURE_OPENAI_DEPLOYMENT_NAME environment variable or provide in configuration.");
+                }
+            }
+            else
+            {
+                // Standard OpenAI validation
+                var apiKey = configuration.Model.ApiKey ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+                if (string.IsNullOrEmpty(apiKey))
+                {
+                    return (false, "OpenAI API key is required. Set OPENAI_API_KEY environment variable or provide in configuration.");
+                }
             }
 
             // Validate temperature range
@@ -993,7 +1119,9 @@ public class ConfigurableKernelService : IConfigurableKernelService
                 return (false, "Agent name cannot be empty");
             }
 
-            _logger.LogInformation("Configuration validation passed for agent: {AgentName}", configuration.AgentName);
+            _logger.LogInformation("Configuration validation passed for agent: {AgentName}, Using: {ServiceType}", 
+                configuration.AgentName, 
+                configuration.Model.IsAzureOpenAI ? "Azure OpenAI" : "OpenAI");
             return (true, "Configuration is valid");
         }
         catch (Exception ex)

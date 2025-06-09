@@ -42,14 +42,14 @@ public class AgentConfiguration
 }
 
 /// <summary>
-/// Configuration for the AI model to use
+/// Configuration for the AI model to use - supports both OpenAI and Azure OpenAI
 /// </summary>
 [Serializable]
 [GenerateSerializer]
 public class ModelConfiguration
 {
     /// <summary>
-    /// The model ID to use (e.g., "gpt-4o-mini")
+    /// The model ID to use (e.g., "gpt-4o-mini") for OpenAI or deployment name for Azure OpenAI
     /// </summary>
     [Id(0)]
     public string ModelId { get; set; } = "gpt-4o-mini";
@@ -61,8 +61,31 @@ public class ModelConfiguration
     public string? ApiKey { get; set; }
 
     /// <summary>
-    /// Base URL for custom model providers (optional)
+    /// Base URL for custom model providers (optional) - for standard OpenAI
     /// </summary>
     [Id(2)]
     public string? BaseUrl { get; set; }
+
+    /// <summary>
+    /// Azure OpenAI deployment name (required for Azure OpenAI)
+    /// </summary>
+    [Id(3)]
+    public string? DeploymentName { get; set; }
+
+    /// <summary>
+    /// Azure OpenAI endpoint URL (required for Azure OpenAI, e.g., "https://contoso.openai.azure.com/")
+    /// </summary>
+    [Id(4)]
+    public string? Endpoint { get; set; }
+
+    /// <summary>
+    /// Azure OpenAI API version (optional, defaults to latest if not specified)
+    /// </summary>
+    [Id(5)]
+    public string? ApiVersion { get; set; }
+
+    /// <summary>
+    /// Determines if this configuration is for Azure OpenAI based on presence of Endpoint
+    /// </summary>
+    public bool IsAzureOpenAI => !string.IsNullOrEmpty(Endpoint);
 } 

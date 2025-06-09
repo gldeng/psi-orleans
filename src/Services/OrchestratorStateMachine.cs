@@ -485,20 +485,64 @@ When finished, you will automatically send a completion callback to your parent 
                 // Store pending callback in state
                 state.AddPendingCallback(callId, callbackData);
                 
-                // Delegate task to child (non-blocking)
+                // Delegate task to child (non-blocking with enhanced timeout handling)
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        var result = await childAgent.ProcessTaskAsync(subTask.Task, state.AgentId);
-                        // Child will send callback automatically when complete
+                        _logger.LogInformation("Starting child agent execution for {ChildId} with task: {Task}", 
+                            subTask.ChildAgentId, subTask.Task.Length > 100 ? subTask.Task.Substring(0, 100) + "..." : subTask.Task);
+                        
+                        // Create a cancellation token with timeout for the specific operation
+                        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(8)); // Slightly longer than Orleans timeout
+                        
+                        try
+                        {
+                            var result = await childAgent.ProcessTaskAsync(subTask.Task, state.AgentId);
+                            
+                            _logger.LogInformation("Child agent {ChildId} completed task successfully", subTask.ChildAgentId);
+                            // Child will send callback automatically when complete
+                        }
+                        catch (TimeoutException timeoutEx)
+                        {
+                            _logger.LogWarning(timeoutEx, "Child agent {ChildId} execution timed out after expected duration", subTask.ChildAgentId);
+                            
+                            // Send timeout-specific callback
+                            var parentAgent = _grainFactory.GetGrain<IConfigurableAgentGrain>(state.AgentId);
+                            var timeoutMessage = $"Child agent task timed out: {subTask.Task.Substring(0, Math.Min(100, subTask.Task.Length))}... " +
+                                                $"Task may be too complex or external services are slow.";
+                            await parentAgent.ReceiveCallbackAsync(callId, timeoutMessage, false);
+                        }
+                        catch (OperationCanceledException cancelEx) when (timeoutCts.Token.IsCancellationRequested)
+                        {
+                            _logger.LogWarning(cancelEx, "Child agent {ChildId} execution was cancelled due to timeout", subTask.ChildAgentId);
+                            
+                            // Send cancellation-specific callback
+                            var parentAgent = _grainFactory.GetGrain<IConfigurableAgentGrain>(state.AgentId);
+                            var cancelMessage = $"Child agent task was cancelled due to timeout: {subTask.Task.Substring(0, Math.Min(100, subTask.Task.Length))}...";
+                            await parentAgent.ReceiveCallbackAsync(callId, cancelMessage, false);
+                        }
                     }
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "Error in child agent {ChildId} execution", subTask.ChildAgentId);
-                        // Send failure callback manually
+                        
+                        // Determine if this is a timeout-related error
+                        var isTimeoutRelated = ex is TimeoutException || 
+                                             ex.Message.Contains("Response did not arrive on time") ||
+                                             ex.Message.Contains("timeout");
+                        
+                        var errorType = isTimeoutRelated ? "TIMEOUT" : "ERROR";
+                        var errorMessage = isTimeoutRelated 
+                            ? $"Child task timed out (likely due to external API delays): {ex.Message}"
+                            : $"Child task failed: {ex.Message}";
+                        
+                        _logger.LogError("Child agent {ChildId} failed with {ErrorType}: {Error}", 
+                            subTask.ChildAgentId, errorType, ex.Message);
+                        
+                        // Send failure callback manually with error type information
                         var parentAgent = _grainFactory.GetGrain<IConfigurableAgentGrain>(state.AgentId);
-                        await parentAgent.ReceiveCallbackAsync(callId, $"Child task failed: {ex.Message}", false);
+                        await parentAgent.ReceiveCallbackAsync(callId, errorMessage, false);
                     }
                 });
                 
@@ -571,6 +615,18 @@ When finished, you will automatically send a completion callback to your parent 
                 .Select(cb => $"Task: {cb.Task}\nResult: {cb.ResultMessage}")
                 .ToList();
             
+            var failedResults = state.CompletedCallbacks
+                .Where(cb => !cb.IsSuccess)
+                .Select(cb => $"Failed Task: {cb.Task}\nError: {cb.ResultMessage}")
+                .ToList();
+            
+            // Categorize failures by type
+            var timeoutFailures = state.CompletedCallbacks
+                .Where(cb => !cb.IsSuccess && (cb.ResultMessage.Contains("timeout") || cb.ResultMessage.Contains("timed out")))
+                .Count();
+            
+            var otherFailures = failedSubTasks - timeoutFailures;
+            
             var analysisPrompt = $@"
 You are analyzing the progress of a complex task that has been broken down into subtasks and delegated to child agents.
 
@@ -579,19 +635,28 @@ Original Task: {state.CurrentTask}
 Progress Status:
 - Total subtasks: {totalSubTasks}
 - Completed successfully: {completedSubTasks}
-- Failed: {failedSubTasks}
+- Failed total: {failedSubTasks} (timeouts: {timeoutFailures}, other errors: {otherFailures})
 - Still pending: {pendingSubTasks}
 
 Completed Results:
 {string.Join("\n\n", completedResults)}
 
+Failed Results:
+{string.Join("\n\n", failedResults)}
+
+Special Considerations:
+- If there are timeout failures, they may be due to external API delays rather than task impossibility
+- Timeout failures could potentially be retried with different approaches
+- Consider if successful results are sufficient to answer the original task
+
 Based on this progress, determine the next action:
 
-1. COMPLETE - If you have enough successful results to satisfy the original task
+1. COMPLETE - If you have enough successful results to satisfy the original task, even with some failures
 2. WAIT - If you need to wait for more pending callbacks before deciding
-3. CREATE_ADDITIONAL - If you need to create additional subtasks to fill gaps
+3. CREATE_ADDITIONAL - If you need to create additional or retry subtasks to fill gaps
+4. RETRY_TIMEOUTS - If timeout failures should be retried with simpler subtasks
 
-Respond with exactly one word: COMPLETE, WAIT, or CREATE_ADDITIONAL";
+Respond with exactly one word: COMPLETE, WAIT, CREATE_ADDITIONAL, or RETRY_TIMEOUTS";
 
             var result = await chatService.GetChatMessageContentAsync(analysisPrompt);
             var decision = result.Content?.Trim().ToUpperInvariant();
@@ -601,6 +666,7 @@ Respond with exactly one word: COMPLETE, WAIT, or CREATE_ADDITIONAL";
                 "COMPLETE" => OrchestrationDecision.CompleteTask,
                 "WAIT" => OrchestrationDecision.WaitForMoreCallbacks,
                 "CREATE_ADDITIONAL" => OrchestrationDecision.CreateAdditionalTasks,
+                "RETRY_TIMEOUTS" => OrchestrationDecision.RetryTimeouts,
                 _ => OrchestrationDecision.WaitForMoreCallbacks // Default to waiting
             };
         }
@@ -628,6 +694,10 @@ Respond with exactly one word: COMPLETE, WAIT, or CREATE_ADDITIONAL";
                 
             case OrchestrationDecision.CreateAdditionalTasks:
                 await CreateAdditionalTasks(state, kernel);
+                break;
+                
+            case OrchestrationDecision.RetryTimeouts:
+                await RetryTimeouts(state, kernel);
                 break;
                 
             default:
@@ -772,5 +842,19 @@ Final aggregated response:";
             _logger.LogError(ex, "Failed to send completion callback to parent {ParentId}", parentId);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Retry subtasks due to timeouts.
+    /// </summary>
+    private async Task RetryTimeouts(ConfigurableAgentState state, Kernel kernel)
+    {
+        _logger.LogInformation("Retrying subtasks due to timeouts for agent {AgentId}", state.AgentId);
+        
+        // TODO: Implement retry logic
+        // For now, this is deferred to a later version
+        await Task.CompletedTask;
+        
+        _logger.LogWarning("RetryTimeouts is not yet implemented - falling back to wait");
     }
 } 
