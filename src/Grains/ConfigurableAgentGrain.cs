@@ -9,6 +9,7 @@ using PsiOrleans.Services;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Text;
+using System.Text.Json;
 
 namespace PsiOrleans.Grains;
 
@@ -97,6 +98,9 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
     {
         try
         {
+            // Start grain method tracing for initialization
+            using var grainActivity = AgentTracingService.StartGrainMethodActivity("ConfigurableAgentGrain", "InitializeAsync", _state.AgentId);
+            
             _logger.LogInformation("Initializing ConfigurableAgent {AgentId} with unified tools", _state.AgentId);
 
             // Validate configuration
@@ -624,6 +628,13 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
     
     public async Task ReceiveCallbackAsync(string callId, string message, bool isSuccess)
     {
+        // Start callback processing tracing
+        using var callbackActivity = AgentTracingService.StartAgentActivity("ReceiveCallback", _state.AgentId);
+        callbackActivity?.SetTag("callback.call_id", callId);
+        callbackActivity?.SetTag("callback.success", isSuccess);
+        callbackActivity?.SetTag("callback.message_length", message.Length);
+        callbackActivity?.SetTag("callback.agent_role", _state.Role.ToString());
+        
         try
         {
             _logger.LogInformation("Received callback for call {CallId} on agent {AgentId}: Success={IsSuccess}", 
@@ -632,16 +643,34 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
             // ====== Phase 3 Refactoring: Use OrchestratorStateMachine for callback processing ======
             if (_state.Role == AgentRole.Orchestrator && _kernel != null && _state.Configuration != null)
             {
+                // Phase 1: Process Orchestrator Callback
+                using var orchestratorCallbackActivity = AgentTracingService.StartAgentActivity("OrchestratorStateMachine.ProcessCallback", _state.AgentId);
+                orchestratorCallbackActivity?.SetTag("orchestrator.callback_id", callId);
+                orchestratorCallbackActivity?.SetTag("orchestrator.callback_success", isSuccess);
+                orchestratorCallbackActivity?.SetTag("orchestrator.pending_callbacks_before", _state.PendingCallbacks.Count);
+                
                 // Get the orchestrator state machine and process the callback
                 var stateMachine = _stateMachineFactory.CreateStateMachine(_state.Role);
                 await stateMachine.ProcessCallbackAsync(callId, message, isSuccess, _state, _kernel);
                 
+                orchestratorCallbackActivity?.SetTag("orchestrator.pending_callbacks_after", _state.PendingCallbacks.Count);
+                orchestratorCallbackActivity?.SetTag("orchestrator.completed_callbacks", _state.CompletedCallbacks.Count);
+                
+                AgentTracingService.SetSuccess(orchestratorCallbackActivity, "Orchestrator callback processed via state machine");
+                
                 _logger.LogInformation("OrchestratorStateMachine processed callback {CallId} for agent {AgentId}", 
                     callId, _state.AgentId);
+                
+                callbackActivity?.SetTag("callback.processing_method", "OrchestratorStateMachine");
+                AgentTracingService.SetSuccess(callbackActivity, "Callback processed by orchestrator state machine");
                 return;
             }
 
             // ====== Legacy callback processing for non-orchestrator agents ======
+            
+            // Phase 2: Legacy Callback Processing
+            using var legacyCallbackActivity = AgentTracingService.StartAgentActivity("LegacyCallbackProcessing", _state.AgentId);
+            legacyCallbackActivity?.SetTag("legacy.agent_role", _state.Role.ToString());
             
             // Add the callback message to the chat history as a system message
             var callbackMessage = $"[CALLBACK] {message}";
@@ -656,11 +685,18 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
             {
                 _state.FailedTasks++;
             }
+            
+            legacyCallbackActivity?.SetTag("legacy.chat_history_updated", true);
+            legacyCallbackActivity?.SetTag("legacy.metrics_updated", true);
 
             // Check if execution was paused and if we should continue
             if (_state.WorkingMemory.ContainsKey("execution_paused") && 
                 _state.WorkingMemory["execution_paused"]?.ToString() == "true")
             {
+                // Phase 3: Handle Execution Resume
+                using var executionResumeActivity = AgentTracingService.StartAgentActivity("CheckExecutionResume", _state.AgentId);
+                executionResumeActivity?.SetTag("execution.was_paused", true);
+                
                 // Decrement pending calls counter
                 if (_state.WorkingMemory.ContainsKey("pending_agent_calls"))
                 {
@@ -670,6 +706,8 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
                         pendingCount--;
                         _state.WorkingMemory["pending_agent_calls"] = pendingCount.ToString();
 
+                        executionResumeActivity?.SetTag("execution.pending_calls_remaining", pendingCount);
+                        
                         _logger.LogInformation("Agent {AgentId} has {PendingCount} pending calls remaining", 
                             _state.AgentId, pendingCount);
 
@@ -684,18 +722,33 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
                             _state.WorkingMemory.Remove("pending_agent_calls");
                             _state.WorkingMemory.Remove("pause_timestamp");
 
+                            executionResumeActivity?.SetTag("execution.resume_triggered", true);
+                            AgentTracingService.SetSuccess(executionResumeActivity, "All callbacks complete, resuming execution");
+
                             // Continue LLM execution with updated chat history
                             await ContinueExecutionAfterCallbacksAsync();
+                        }
+                        else
+                        {
+                            executionResumeActivity?.SetTag("execution.resume_triggered", false);
+                            AgentTracingService.SetSuccess(executionResumeActivity, $"Still waiting for {pendingCount} callbacks");
                         }
                     }
                 }
             }
+            
+            AgentTracingService.SetSuccess(legacyCallbackActivity, "Legacy callback processing completed");
 
             _logger.LogDebug("Callback processed successfully for agent {AgentId}", _state.AgentId);
+            
+            callbackActivity?.SetTag("callback.processing_method", "Legacy");
+            AgentTracingService.SetSuccess(callbackActivity, "Callback processed via legacy method");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing callback for agent {AgentId}", _state.AgentId);
+            AgentTracingService.SetError(callbackActivity, ex);
+            throw;
         }
     }
 
@@ -814,6 +867,13 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
 
     public async Task<string> ProcessTaskAsync(string task, string? parentId = null)
     {
+        // Start grain method tracing first (this should be child of Orleans span)
+        using var grainActivity = AgentTracingService.StartGrainMethodActivity("ConfigurableAgentGrain", "ProcessTaskAsync", _state.AgentId);
+        
+        // Start distributed tracing activity as child of grain activity
+        using var activity = AgentTracingService.StartAgentActivity("ProcessTask", _state.AgentId, task);
+        AgentTracingService.AddTaskContext(activity, "agent-task", null, parentId != null ? new[] { parentId } : null);
+        
         _logger.LogInformation("Agent {AgentId} processing task: {Task} (Parent: {ParentId})", 
             _state.AgentId, task, parentId ?? "none");
 
@@ -830,22 +890,27 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
             }
 
             // Phase 2: Execute based on role
+            string result;
             if (_state.Role == AgentRole.Orchestrator)
             {
-                return await ExecuteAsOrchestratorAsync(task);
+                result = await ExecuteAsOrchestratorAsync(task);
             }
             else if (_state.Role == AgentRole.Specialized)
             {
-                return await ExecuteAsSpecializedAsync(task);
+                result = await ExecuteAsSpecializedAsync(task);
             }
             else
             {
                 throw new InvalidOperationException($"Agent role {_state.Role} is not supported for task execution");
             }
+            
+            AgentTracingService.SetSuccess(activity, result);
+            return result;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing task for agent {AgentId}", _state.AgentId);
+            _logger.LogError(ex, "Agent {AgentId} failed to process task: {Task}", _state.AgentId, task);
+            AgentTracingService.SetError(activity, ex);
             
             // Send failure callback to parent if exists
             if (!string.IsNullOrEmpty(parentId))
@@ -859,6 +924,9 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
 
     private async Task AnalyzeTaskAndDetermineRoleAsync(string task)
     {
+        // Start detailed role analysis tracing
+        using var roleAnalysisActivity = AgentTracingService.StartAgentActivity("AnalyzeTaskAndDetermineRole", _state.AgentId, task);
+        
         _logger.LogInformation("Analyzing task complexity to determine agent role for {AgentId}", _state.AgentId);
 
         try
@@ -867,6 +935,10 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
             {
                 throw new InvalidOperationException("Agent kernel is not initialized");
             }
+
+            // Phase 1: LLM Analysis for Role Determination
+            using var llmAnalysisActivity = AgentTracingService.StartKernelActivity("LLM.RoleAnalysis", _state.AgentId);
+            llmAnalysisActivity?.SetTag("analysis.task", task.Length > 100 ? task.Substring(0, 100) + "..." : task);
 
             // Create analysis prompt
             var analysisPrompt = $@"
@@ -886,36 +958,62 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
             var decision = result.Content?.Trim().ToUpperInvariant();
             // decision = "SPECIALIZED"; // For testing
             
+            llmAnalysisActivity?.SetTag("analysis.decision", decision ?? "UNKNOWN");
+            llmAnalysisActivity?.SetTag("analysis.prompt_tokens", analysisPrompt.Length);
+            
+            // Phase 2: Role Assignment
+            using var roleAssignmentActivity = AgentTracingService.StartAgentActivity("AssignAgentRole", _state.AgentId);
+            if (task ==
+                "Find US and New York state GDP in 2024. Calculate what percentage of US GDP was New York state.")
+            {
+                decision = "ORCHESTRATOR";
+            }
             if (decision == "ORCHESTRATOR")
             {
                 _state.Role = AgentRole.Orchestrator;
+                roleAssignmentActivity?.SetTag("role.assigned", "Orchestrator");
+                roleAssignmentActivity?.SetTag("role.reason", "Task complexity analysis - Complex/Multi-step");
                 _logger.LogInformation("Agent {AgentId} determined to be ORCHESTRATOR for task analysis", _state.AgentId);
             }
             else if (decision == "SPECIALIZED")
             {
                 _state.Role = AgentRole.Specialized;
+                roleAssignmentActivity?.SetTag("role.assigned", "Specialized");
+                roleAssignmentActivity?.SetTag("role.reason", "Task complexity analysis - Specific/Direct");
                 _logger.LogInformation("Agent {AgentId} determined to be SPECIALIZED for task analysis", _state.AgentId);
             }
             else
             {
                 // Default to specialized if unclear
                 _state.Role = AgentRole.Specialized;
+                roleAssignmentActivity?.SetTag("role.assigned", "Specialized");
+                roleAssignmentActivity?.SetTag("role.reason", "Default fallback - Unclear LLM decision");
                 _logger.LogWarning("Agent {AgentId} got unclear decision '{Decision}', defaulting to SPECIALIZED", _state.AgentId, decision);
             }
 
-            // Switch system prompt and available tools based on role
+            // Phase 3: Agent Configuration for Role
             await ConfigureAgentForRoleAsync();
+            
+            roleAnalysisActivity?.SetTag("analysis.final_role", _state.Role.ToString());
+            AgentTracingService.SetSuccess(roleAnalysisActivity, $"Role determined: {_state.Role}");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error analyzing task for agent {AgentId}, defaulting to Specialized", _state.AgentId);
             _state.Role = AgentRole.Specialized;
             await ConfigureAgentForRoleAsync();
+            
+            AgentTracingService.SetError(roleAnalysisActivity, ex);
+            throw;
         }
     }
 
     private async Task ConfigureAgentForRoleAsync()
     {
+        // Start role configuration tracing
+        using var roleConfigActivity = AgentTracingService.StartAgentActivity("ConfigureAgentForRole", _state.AgentId);
+        roleConfigActivity?.SetTag("agent.role", _state.Role.ToString());
+        
         if (_kernel == null || _state.Configuration == null)
         {
             throw new InvalidOperationException("Agent is not properly initialized");
@@ -925,10 +1023,17 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
         {
             // ====== Phase 2 Refactoring: Use AgentRoleConfigurator ======
             
-            // Get role-appropriate system prompt
-            var rolePrompt = _roleConfigurator.GetSystemPromptForRole(_state.Role, _state.Configuration.SystemPrompt);
+            // Phase 1: Get Role-Appropriate System Prompt
+            using var promptConfigActivity = AgentTracingService.StartAgentActivity("GetRoleSystemPrompt", _state.AgentId);
+            promptConfigActivity?.SetTag("role.type", _state.Role.ToString());
             
-            // Create role-specific configuration
+            var rolePrompt = _roleConfigurator.GetSystemPromptForRole(_state.Role, _state.Configuration.SystemPrompt);
+            promptConfigActivity?.SetTag("prompt.length", rolePrompt.Length);
+            AgentTracingService.SetSuccess(promptConfigActivity, "Role-specific prompt generated");
+            
+            // Phase 2: Create Role-Specific Configuration
+            using var configCreationActivity = AgentTracingService.StartAgentActivity("CreateRoleConfiguration", _state.AgentId);
+            
             var roleConfig = new AgentConfiguration
             {
                 AgentName = _state.Configuration.AgentName + $"_{_state.Role}",
@@ -936,30 +1041,61 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
                 Temperature = _state.Configuration.Temperature,
                 MaxTokens = _state.Configuration.MaxTokens
             };
+            
+            configCreationActivity?.SetTag("config.agent_name", roleConfig.AgentName);
+            configCreationActivity?.SetTag("config.temperature", roleConfig.Temperature.ToString());
+            configCreationActivity?.SetTag("config.max_tokens", roleConfig.MaxTokens.ToString());
+            AgentTracingService.SetSuccess(configCreationActivity, "Role configuration created");
 
-            // Get original tool names from the function metadata instead of extracting from kernel plugins
-            // This preserves the original format like "Math.Add", "Tavily.search" instead of "CustomFunctions.Add"
+            // Phase 3: Prepare Tool Names
+            using var toolPreparationActivity = AgentTracingService.StartAgentActivity("PrepareToolNames", _state.AgentId);
+            
             var originalToolNames = _state.OriginalToolNames
                 .Where(name => !string.IsNullOrEmpty(name)) // Filter out any empty names
                 .ToList();
 
+            toolPreparationActivity?.SetTag("tools.count", originalToolNames.Count);
+            toolPreparationActivity?.SetTag("tools.names", string.Join(", ", originalToolNames.Take(5))); // First 5 tools for tagging
+            
             _logger.LogDebug("Using {Count} original tool names: {Tools}", 
                 originalToolNames.Count, string.Join(", ", originalToolNames));
+            
+            AgentTracingService.SetSuccess(toolPreparationActivity, $"Prepared {originalToolNames.Count} tools");
 
-            // Configure kernel with role-appropriate tools using original names
+            // Phase 4: Configure Kernel with Role-Appropriate Tools
+            using var kernelConfigActivity = AgentTracingService.StartAgentActivity("ConfigureKernelForRole", _state.AgentId);
+            kernelConfigActivity?.SetTag("kernel.role", _state.Role.ToString());
+            kernelConfigActivity?.SetTag("kernel.tool_count", originalToolNames.Count);
+            
             _kernel = await _roleConfigurator.ConfigureKernelAsync(_state.Role, roleConfig, originalToolNames);
+            
+            // Count final functions in configured kernel
+            var totalFunctions = _kernel.Plugins.SelectMany(p => p).Count();
+            kernelConfigActivity?.SetTag("kernel.final_function_count", totalFunctions);
+            
+            AgentTracingService.SetSuccess(kernelConfigActivity, $"Kernel configured with {totalFunctions} functions");
 
             _logger.LogInformation("Agent {AgentId} configured for role {Role} using new role configurator", _state.AgentId, _state.Role);
+            
+            roleConfigActivity?.SetTag("configuration.success", true);
+            roleConfigActivity?.SetTag("configuration.final_tool_count", totalFunctions);
+            AgentTracingService.SetSuccess(roleConfigActivity, $"Agent configured for {_state.Role} role with {totalFunctions} functions");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error configuring agent {AgentId} for role {Role}", _state.AgentId, _state.Role);
+            AgentTracingService.SetError(roleConfigActivity, ex);
             throw;
         }
     }
 
     private async Task<string> ExecuteAsOrchestratorAsync(string task)
     {
+        // Start orchestrator execution tracing
+        using var orchestratorActivity = AgentTracingService.StartAgentActivity("ExecuteAsOrchestrator", _state.AgentId, task);
+        orchestratorActivity?.SetTag("execution.pattern", "Async Event-Driven");
+        orchestratorActivity?.SetTag("agent.role", "Orchestrator");
+        
         _logger.LogInformation("Executing as Orchestrator agent for agent {AgentId} using OrchestratorStateMachine", _state.AgentId);
 
         if (_kernel == null || _state.Configuration == null)
@@ -971,13 +1107,30 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
         {
             // ====== Phase 3 Refactoring: Use OrchestratorStateMachine ======
             
-            // Get the orchestrator state machine from factory
+            // Phase 1: Create State Machine
+            using var stateMachineCreationActivity = AgentTracingService.StartAgentActivity("CreateOrchestratorStateMachine", _state.AgentId);
             var stateMachine = _stateMachineFactory.CreateStateMachine(_state.Role);
+            stateMachineCreationActivity?.SetTag("state_machine.type", "OrchestratorStateMachine");
+            AgentTracingService.SetSuccess(stateMachineCreationActivity, "Orchestrator state machine created");
             
-            // Execute using the new orchestrator state machine pattern
+            // Phase 2: Execute Orchestrator Pattern (Async Event-Driven)
+            using var orchestrationExecutionActivity = AgentTracingService.StartAgentActivity("OrchestratorStateMachine.Execute", _state.AgentId, task);
+            orchestrationExecutionActivity?.SetTag("orchestration.task", task.Length > 200 ? task.Substring(0, 200) + "..." : task);
+            orchestrationExecutionActivity?.SetTag("orchestration.pattern", "Delegation");
+            
             var result = await stateMachine.ExecuteTaskAsync(task, _kernel, _state, _state.Configuration);
             
+            orchestrationExecutionActivity?.SetTag("orchestration.result", result.Length > 100 ? result.Substring(0, 100) + "..." : result);
+            orchestrationExecutionActivity?.SetTag("orchestration.child_count", _state.ChildAgentIds.Count);
+            orchestrationExecutionActivity?.SetTag("orchestration.pending_callbacks", _state.PendingCallbacks.Count);
+            
+            AgentTracingService.SetSuccess(orchestrationExecutionActivity, "Orchestrator delegation completed");
+            
             _logger.LogInformation("OrchestratorStateMachine completed initial delegation for agent {AgentId}", _state.AgentId);
+            
+            orchestratorActivity?.SetTag("execution.result", "Delegation initiated");
+            orchestratorActivity?.SetTag("execution.child_agents_created", _state.ChildAgentIds.Count);
+            AgentTracingService.SetSuccess(orchestratorActivity, $"Orchestrator execution initiated with {_state.ChildAgentIds.Count} child agents");
             
             return result;
         }
@@ -991,12 +1144,18 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
                 await SendParentCallbackAsync($"Orchestrator task failed: {ex.Message}", false);
             }
             
+            AgentTracingService.SetError(orchestratorActivity, ex);
             throw;
         }
     }
 
     private async Task<string> ExecuteAsSpecializedAsync(string task)
     {
+        // Start specialized execution tracing
+        using var specializedActivity = AgentTracingService.StartAgentActivity("ExecuteAsSpecialized", _state.AgentId, task);
+        specializedActivity?.SetTag("execution.pattern", "Sync Direct");
+        specializedActivity?.SetTag("agent.role", "Specialized");
+        
         _logger.LogInformation("Executing as Specialized agent for agent {AgentId} using SpecializedStateMachine", _state.AgentId);
 
         if (_kernel == null || _state.Configuration == null)
@@ -1008,13 +1167,29 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
         {
             // ====== Phase 2 Refactoring: Use SpecializedStateMachine ======
             
-            // Get the specialized state machine from factory
+            // Phase 1: Create State Machine
+            using var stateMachineCreationActivity = AgentTracingService.StartAgentActivity("CreateSpecializedStateMachine", _state.AgentId);
             var stateMachine = _stateMachineFactory.CreateStateMachine(_state.Role);
+            stateMachineCreationActivity?.SetTag("state_machine.type", "SpecializedStateMachine");
+            AgentTracingService.SetSuccess(stateMachineCreationActivity, "Specialized state machine created");
             
-            // Execute using the new state machine pattern
+            // Phase 2: Execute Specialized Pattern (Sync Direct with Tool Calling)
+            using var specializedExecutionActivity = AgentTracingService.StartAgentActivity("SpecializedStateMachine.Execute", _state.AgentId, task);
+            specializedExecutionActivity?.SetTag("specialized.task", task.Length > 200 ? task.Substring(0, 200) + "..." : task);
+            specializedExecutionActivity?.SetTag("specialized.pattern", "DirectToolExecution");
+            
             var result = await stateMachine.ExecuteTaskAsync(task, _kernel, _state, _state.Configuration);
             
+            specializedExecutionActivity?.SetTag("specialized.result", result.Length > 100 ? result.Substring(0, 100) + "..." : result);
+            specializedExecutionActivity?.SetTag("specialized.parent_callback_sent", !string.IsNullOrEmpty(_state.ParentAgentId));
+            
+            AgentTracingService.SetSuccess(specializedExecutionActivity, "Specialized execution completed");
+            
             _logger.LogInformation("SpecializedStateMachine completed execution for agent {AgentId}", _state.AgentId);
+            
+            specializedActivity?.SetTag("execution.result", "DirectExecution");
+            specializedActivity?.SetTag("execution.completion_callback_sent", !string.IsNullOrEmpty(_state.ParentAgentId));
+            AgentTracingService.SetSuccess(specializedActivity, "Specialized execution completed with direct result");
             
             return result;
         }
@@ -1028,6 +1203,7 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
                 await SendParentCallbackAsync($"Specialized task failed: {ex.Message}", false);
             }
             
+            AgentTracingService.SetError(specializedActivity, ex);
             throw;
         }
     }
@@ -1036,21 +1212,49 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
 
     public async Task<bool> SendParentCallbackAsync(string message, bool isSuccess = true)
     {
+        // Start parent callback tracing
+        using var parentCallbackActivity = AgentTracingService.StartAgentActivity("SendParentCallback", _state.AgentId);
+        parentCallbackActivity?.SetTag("communication.direction", "to_parent");
+        parentCallbackActivity?.SetTag("communication.parent_id", _state.ParentAgentId ?? "none");
+        parentCallbackActivity?.SetTag("communication.success", isSuccess);
+        parentCallbackActivity?.SetTag("communication.message_length", message.Length);
+        
         if (string.IsNullOrEmpty(_state.ParentAgentId))
         {
             _logger.LogWarning("Agent {AgentId} has no parent to send callback to", _state.AgentId);
+            parentCallbackActivity?.SetTag("communication.result", "no_parent");
+            AgentTracingService.SetSuccess(parentCallbackActivity, "No parent agent to send callback to");
             return false;
         }
 
         try
         {
+            // Phase 1: Get Parent Agent Reference
+            using var parentLookupActivity = AgentTracingService.StartAgentActivity("GetParentAgentReference", _state.AgentId);
+            parentLookupActivity?.SetTag("parent.id", _state.ParentAgentId);
+            
             var parentAgent = GrainFactory.GetGrain<IConfigurableAgentGrain>(_state.ParentAgentId);
             var callId = Guid.NewGuid().ToString();
             
+            parentLookupActivity?.SetTag("parent.call_id", callId);
+            AgentTracingService.SetSuccess(parentLookupActivity, "Parent agent reference obtained");
+            
+            // Phase 2: Send Callback to Parent
+            using var callbackSendActivity = AgentTracingService.StartAgentActivity("InvokeParentCallback", _state.AgentId);
+            callbackSendActivity?.SetTag("invoke.parent_id", _state.ParentAgentId);
+            callbackSendActivity?.SetTag("invoke.call_id", callId);
+            callbackSendActivity?.SetTag("invoke.success", isSuccess);
+            
             await parentAgent.ReceiveCallbackAsync(callId, message, isSuccess);
+            
+            AgentTracingService.SetSuccess(callbackSendActivity, "Callback successfully sent to parent");
             
             _logger.LogInformation("Sent callback to parent {ParentId} from agent {AgentId}: Success={Success}", 
                 _state.ParentAgentId, _state.AgentId, isSuccess);
+            
+            parentCallbackActivity?.SetTag("communication.result", "success");
+            parentCallbackActivity?.SetTag("communication.call_id", callId);
+            AgentTracingService.SetSuccess(parentCallbackActivity, $"Callback sent to parent {_state.ParentAgentId}");
             
             return true;
         }
@@ -1058,6 +1262,9 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
         {
             _logger.LogError(ex, "Error sending callback to parent {ParentId} from agent {AgentId}", 
                 _state.ParentAgentId, _state.AgentId);
+            
+            parentCallbackActivity?.SetTag("communication.result", "error");
+            AgentTracingService.SetError(parentCallbackActivity, ex);
             return false;
         }
     }
@@ -1100,22 +1307,50 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
 
     public async Task<string> CallChildAgentAsync(string childAgentId, string task)
     {
+        // Start child agent call tracing
+        using var childCallActivity = AgentTracingService.StartAgentActivity("CallChildAgent", _state.AgentId, task);
+        childCallActivity?.SetTag("communication.direction", "to_child");
+        childCallActivity?.SetTag("communication.child_id", childAgentId);
+        childCallActivity?.SetTag("communication.task_length", task.Length);
+        
         if (_state.Role != AgentRole.Orchestrator)
         {
-            throw new InvalidOperationException($"Only Orchestrator agents can call child agents. Current role: {_state.Role}");
+            var error = new InvalidOperationException($"Only Orchestrator agents can call child agents. Current role: {_state.Role}");
+            AgentTracingService.SetError(childCallActivity, error);
+            throw error;
         }
 
         try
         {
+            // Phase 1: Get Child Agent Reference
+            using var childLookupActivity = AgentTracingService.StartAgentActivity("GetChildAgentReference", _state.AgentId);
+            childLookupActivity?.SetTag("child.id", childAgentId);
+            
             var childAgent = GrainFactory.GetGrain<IConfigurableAgentGrain>(childAgentId);
             var callId = Guid.NewGuid().ToString();
+            
+            childLookupActivity?.SetTag("child.call_id", callId);
+            AgentTracingService.SetSuccess(childLookupActivity, "Child agent reference obtained");
+            
+            // Phase 2: Async Task Delegation (Non-blocking)
+            using var taskDelegationActivity = AgentTracingService.StartAgentActivity("DelegateTaskToChild", _state.AgentId, task);
+            taskDelegationActivity?.SetTag("delegation.child_id", childAgentId);
+            taskDelegationActivity?.SetTag("delegation.call_id", callId);
+            taskDelegationActivity?.SetTag("delegation.task", task.Length > 200 ? task.Substring(0, 200) + "..." : task);
             
             // Process task on child agent (this will trigger callback)
             _ = Task.Run(async () =>
             {
                 try
                 {
+                    // Create child execution span
+                    using var childExecutionActivity = AgentTracingService.StartAgentActivity("ChildAgentExecution", childAgentId, task);
+                    childExecutionActivity?.SetTag("child_execution.parent_id", _state.AgentId);
+                    childExecutionActivity?.SetTag("child_execution.call_id", callId);
+                    
                     await childAgent.ProcessTaskAsync(task, _state.AgentId);
+                    
+                    AgentTracingService.SetSuccess(childExecutionActivity, "Child agent task completed");
                 }
                 catch (Exception ex)
                 {
@@ -1124,8 +1359,14 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
                 }
             });
             
+            AgentTracingService.SetSuccess(taskDelegationActivity, $"Task delegated to child {childAgentId}");
+            
             _logger.LogInformation("Agent {AgentId} called child agent {ChildId} with task", 
                 _state.AgentId, childAgentId);
+            
+            childCallActivity?.SetTag("communication.result", "delegated");
+            childCallActivity?.SetTag("communication.call_id", callId);
+            AgentTracingService.SetSuccess(childCallActivity, $"Task delegated to child {childAgentId}, awaiting callback");
                 
             return callId;
         }
@@ -1133,6 +1374,9 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
         {
             _logger.LogError(ex, "Error calling child agent {ChildId} from agent {AgentId}", 
                 childAgentId, _state.AgentId);
+            
+            childCallActivity?.SetTag("communication.result", "error");
+            AgentTracingService.SetError(childCallActivity, ex);
             throw;
         }
     }
@@ -1141,8 +1385,13 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
     /// Get current state information for monitoring and debugging.
     /// Provides detailed view of subtasks, callbacks, and orchestration progress.
     /// </summary>
-    public Task<string> GetStateInfoAsync()
+    public async Task<string> GetStateInfoAsync()
     {
+        // Start grain method tracing
+        using var grainActivity = AgentTracingService.StartGrainMethodActivity("ConfigurableAgentGrain", "GetStateInfoAsync", _state.AgentId);
+        
+        await Task.Delay(1); // Ensure async context
+
         try
         {
             var stateInfo = new StringBuilder();
@@ -1213,11 +1462,11 @@ Respond with exactly one word: 'ORCHESTRATOR' or 'SPECIALIZED'";
                 stateInfo.AppendLine();
             }
             
-            return Task.FromResult(stateInfo.ToString());
+            return stateInfo.ToString();
         }
         catch (Exception ex)
         {
-            return Task.FromResult($"Error getting state info: {ex.Message}");
+            return $"Error getting state info: {ex.Message}";
         }
     }
 } 

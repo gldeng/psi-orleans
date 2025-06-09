@@ -5,6 +5,7 @@ using Microsoft.SemanticKernel.Connectors.OpenAI;
 using Orleans;
 using PsiOrleans.Grains;
 using PsiOrleans.Models;
+using PsiOrleans.Services;
 
 namespace PsiOrleans.Services;
 
@@ -40,30 +41,68 @@ public class OrchestratorStateMachine : IAgentStateMachine
     /// </summary>
     public async Task<string> ExecuteTaskAsync(string task, Kernel kernel, ConfigurableAgentState state, AgentConfiguration config)
     {
+        // Start orchestrator execution tracing
+        using var orchestratorExecutionActivity = AgentTracingService.StartAgentActivity("OrchestratorStateMachine.ExecuteTask", state.AgentId, task);
+        orchestratorExecutionActivity?.SetTag("orchestrator.execution_pattern", "AsyncEventDriven");
+        orchestratorExecutionActivity?.SetTag("orchestrator.agent_id", state.AgentId);
+        orchestratorExecutionActivity?.SetTag("orchestrator.task_length", task.Length);
+        
         _logger.LogInformation("OrchestratorStateMachine executing task for agent {AgentId}: {Task}", 
             state.AgentId, task);
 
         if (kernel == null)
         {
-            throw new InvalidOperationException("Kernel is not configured for orchestrator execution");
+            var error = new InvalidOperationException("Kernel is not configured for orchestrator execution");
+            AgentTracingService.SetError(orchestratorExecutionActivity, error);
+            throw error;
         }
 
         try
         {
-            // Async Event-Driven Execution Pattern:
-            // 1. Plan delegation using LLM
+            // Phase 1: Plan delegation using LLM
+            using var planningActivity = AgentTracingService.StartKernelActivity("OrchestratorLLM.PlanDelegation", state.AgentId);
+            planningActivity?.SetTag("planning.task", task.Length > 200 ? task.Substring(0, 200) + "..." : task);
+            
             var subTasks = await PlanDelegation(task, kernel, state);
             
-            // 2. Create child agents for subtasks
+            planningActivity?.SetTag("planning.subtasks_generated", subTasks.Count);
+            planningActivity?.SetTag("planning.subtask_titles", string.Join(", ", subTasks.Take(3).Select(st => st.Task.Length > 50 ? st.Task.Substring(0, 50) + "..." : st.Task)));
+            AgentTracingService.SetSuccess(planningActivity, $"Generated {subTasks.Count} subtasks via LLM planning");
+            
+            // Phase 2: Create child agents for subtasks
+            using var childCreationActivity = AgentTracingService.StartAgentActivity("CreateChildAgents", state.AgentId);
+            childCreationActivity?.SetTag("child_creation.subtask_count", subTasks.Count);
+            
             await CreateChildAgents(subTasks, state, config);
             
-            // 3. Delegate tasks to child agents (non-blocking)
+            var createdChildren = subTasks.Count(st => !string.IsNullOrEmpty(st.ChildAgentId));
+            childCreationActivity?.SetTag("child_creation.agents_created", createdChildren);
+            childCreationActivity?.SetTag("child_creation.child_ids", string.Join(", ", subTasks.Where(st => !string.IsNullOrEmpty(st.ChildAgentId)).Select(st => st.ChildAgentId).Take(5)));
+            AgentTracingService.SetSuccess(childCreationActivity, $"Created {createdChildren} child agents");
+            
+            // Phase 3: Delegate tasks to child agents (non-blocking)
+            using var delegationActivity = AgentTracingService.StartAgentActivity("DelegateTasksNonBlocking", state.AgentId);
+            delegationActivity?.SetTag("delegation.subtask_count", subTasks.Count);
+            delegationActivity?.SetTag("delegation.pattern", "NonBlocking");
+            
             await DelegateTasks(subTasks, state);
+            
+            var delegatedTasks = subTasks.Count(st => st.Status == SubTaskStatus.Delegated);
+            delegationActivity?.SetTag("delegation.tasks_delegated", delegatedTasks);
+            delegationActivity?.SetTag("delegation.pending_callbacks", state.PendingCallbacks.Count);
+            AgentTracingService.SetSuccess(delegationActivity, $"Delegated {delegatedTasks} tasks, {state.PendingCallbacks.Count} callbacks pending");
             
             _logger.LogInformation("OrchestratorStateMachine initiated delegation for {SubTaskCount} subtasks", subTasks.Count);
             
+            var result = $"Orchestration initiated: {subTasks.Count} subtasks delegated. Awaiting child agent callbacks.";
+            
+            orchestratorExecutionActivity?.SetTag("orchestrator.subtasks_delegated", subTasks.Count);
+            orchestratorExecutionActivity?.SetTag("orchestrator.pending_callbacks", state.PendingCallbacks.Count);
+            orchestratorExecutionActivity?.SetTag("orchestrator.result", "DelegationInitiated");
+            AgentTracingService.SetSuccess(orchestratorExecutionActivity, $"Orchestrator execution completed: {subTasks.Count} subtasks delegated");
+            
             // Return immediately after delegation - callbacks will be processed separately
-            return $"Orchestration initiated: {subTasks.Count} subtasks delegated. Awaiting child agent callbacks.";
+            return result;
         }
         catch (Exception ex)
         {
@@ -76,6 +115,7 @@ public class OrchestratorStateMachine : IAgentStateMachine
                 await SendCompletionCallback(state.ParentAgentId, errorMessage, false);
             }
             
+            AgentTracingService.SetError(orchestratorExecutionActivity, ex);
             throw;
         }
     }
@@ -86,28 +126,61 @@ public class OrchestratorStateMachine : IAgentStateMachine
     /// </summary>
     public async Task ProcessCallbackAsync(string callId, string message, bool isSuccess, ConfigurableAgentState state, Kernel kernel)
     {
+        // Start callback processing tracing
+        using var callbackProcessingActivity = AgentTracingService.StartAgentActivity("OrchestratorStateMachine.ProcessCallback", state.AgentId);
+        callbackProcessingActivity?.SetTag("callback.call_id", callId);
+        callbackProcessingActivity?.SetTag("callback.success", isSuccess);
+        callbackProcessingActivity?.SetTag("callback.message_length", message.Length);
+        callbackProcessingActivity?.SetTag("callback.pending_before", state.PendingCallbacks.Count);
+        
         _logger.LogInformation("OrchestratorStateMachine processing callback {CallId} for agent {AgentId}", 
             callId, state.AgentId);
 
         try
         {
-            // Process the child callback and update state
+            // Phase 1: Process the child callback and update state
+            using var childCallbackActivity = AgentTracingService.StartAgentActivity("ProcessChildCallback", state.AgentId);
+            childCallbackActivity?.SetTag("child_callback.call_id", callId);
+            childCallbackActivity?.SetTag("child_callback.success", isSuccess);
+            
             await ProcessChildCallback(callId, message, isSuccess, state);
             
-            // Use LLM to analyze current progress and make orchestration decision
+            childCallbackActivity?.SetTag("child_callback.pending_after", state.PendingCallbacks.Count);
+            childCallbackActivity?.SetTag("child_callback.completed_total", state.CompletedCallbacks.Count);
+            AgentTracingService.SetSuccess(childCallbackActivity, "Child callback processed and state updated");
+            
+            // Phase 2: Use LLM to analyze current progress and make orchestration decision
+            using var orchestrationAnalysisActivity = AgentTracingService.StartKernelActivity("OrchestratorLLM.AnalyzeProgress", state.AgentId);
+            orchestrationAnalysisActivity?.SetTag("analysis.pending_callbacks", state.PendingCallbacks.Count);
+            orchestrationAnalysisActivity?.SetTag("analysis.completed_callbacks", state.CompletedCallbacks.Count);
+            orchestrationAnalysisActivity?.SetTag("analysis.current_subtasks", state.CurrentSubTasks.Count);
+            
             var decision = await AnalyzeProgressWithLLM(state, kernel);
             
-            // Execute the orchestration decision
+            orchestrationAnalysisActivity?.SetTag("analysis.decision", decision.ToString());
+            AgentTracingService.SetSuccess(orchestrationAnalysisActivity, $"LLM orchestration decision: {decision}");
+            
+            // Phase 3: Execute the orchestration decision
+            using var decisionExecutionActivity = AgentTracingService.StartAgentActivity("ExecuteOrchestrationDecision", state.AgentId);
+            decisionExecutionActivity?.SetTag("decision.type", decision.ToString());
+            
             await ExecuteOrchestrationDecision(decision, state, kernel);
             
+            decisionExecutionActivity?.SetTag("decision.executed", true);
+            AgentTracingService.SetSuccess(decisionExecutionActivity, $"Orchestration decision {decision} executed successfully");
+            
             _logger.LogInformation("OrchestratorStateMachine processed callback and made decision: {Decision}", decision);
+            
+            callbackProcessingActivity?.SetTag("callback.processing_result", decision.ToString());
+            callbackProcessingActivity?.SetTag("callback.pending_after", state.PendingCallbacks.Count);
+            AgentTracingService.SetSuccess(callbackProcessingActivity, $"Callback processed, decision: {decision}");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing callback {CallId} for agent {AgentId}", callId, state.AgentId);
+            AgentTracingService.SetError(callbackProcessingActivity, ex);
             throw;
         }
-
     }
 
     /// <summary>

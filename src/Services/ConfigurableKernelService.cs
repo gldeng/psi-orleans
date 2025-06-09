@@ -214,25 +214,47 @@ public class ConfigurableKernelService : IConfigurableKernelService
 
     public async Task<string> ExecuteTaskAsync(Kernel kernel, string task, ConfigurableAgentState state, string systemPrompt, bool waitForCompletion = true)
     {
+        // Start kernel service execution tracing
+        using var kernelExecutionActivity = AgentTracingService.StartKernelActivity("ConfigurableKernelService.ExecuteTask", state.AgentId);
+        kernelExecutionActivity?.SetTag("kernel_execution.agent_id", state.AgentId);
+        kernelExecutionActivity?.SetTag("kernel_execution.task_length", task.Length);
+        kernelExecutionActivity?.SetTag("kernel_execution.wait_for_completion", waitForCompletion);
+        kernelExecutionActivity?.SetTag("kernel_execution.system_prompt_length", systemPrompt.Length);
+        
         try
         {
             _logger.LogInformation("Executing task with configurable kernel: {Task} (waitForCompletion: {WaitForCompletion})", task, waitForCompletion);
 
+            // Phase 1: Prepare chat service and history
+            using var chatPreparationActivity = AgentTracingService.StartKernelActivity("PrepareChatServiceAndHistory", state.AgentId);
+            
             var chatService = kernel.GetRequiredService<IChatCompletionService>();
             var chatHistory = state.ToSemanticKernelChatHistory();
+            
+            chatPreparationActivity?.SetTag("chat_prep.existing_history_count", chatHistory.Count);
 
             // Add system message if this is a fresh conversation
             if (chatHistory.Count == 0)
             {
                 chatHistory.AddSystemMessage(systemPrompt);
                 state.AddChatMessage("system", systemPrompt);
+                chatPreparationActivity?.SetTag("chat_prep.system_message_added", true);
+            }
+            else
+            {
+                chatPreparationActivity?.SetTag("chat_prep.system_message_added", false);
             }
 
             // Add the user task
             chatHistory.AddUserMessage(task);
             state.AddChatMessage("user", task);
+            
+            chatPreparationActivity?.SetTag("chat_prep.final_history_count", chatHistory.Count);
+            AgentTracingService.SetSuccess(chatPreparationActivity, $"Chat prepared with {chatHistory.Count} messages");
 
-            // Configure execution settings for manual function calling
+            // Phase 2: Configure execution settings
+            using var executionSettingsActivity = AgentTracingService.StartKernelActivity("ConfigureExecutionSettings", state.AgentId);
+            
             var executionSettings = new OpenAIPromptExecutionSettings
             {
                 // Enable function calling but don't auto-invoke - we'll handle manually
@@ -240,17 +262,34 @@ public class ConfigurableKernelService : IConfigurableKernelService
                 MaxTokens = state.Configuration?.MaxTokens ?? 4000,
                 Temperature = state.Configuration?.Temperature ?? 0.1
             };
+            
+            executionSettingsActivity?.SetTag("execution_settings.max_tokens", executionSettings.MaxTokens);
+            executionSettingsActivity?.SetTag("execution_settings.temperature", executionSettings.Temperature);
+            executionSettingsActivity?.SetTag("execution_settings.tool_call_behavior", "EnableKernelFunctions");
+            AgentTracingService.SetSuccess(executionSettingsActivity, "Execution settings configured for LLM");
 
-            // Get initial response from LLM (may contain function calls)
+            // Phase 3: Get initial response from LLM
+            using var initialLLMActivity = AgentTracingService.StartKernelActivity("InitialLLMCall", state.AgentId);
+            initialLLMActivity?.SetTag("llm_call.type", "initial");
+            initialLLMActivity?.SetTag("llm_call.history_count", chatHistory.Count);
+            
             var result = await chatService.GetChatMessageContentAsync(
                 chatHistory,
                 executionSettings,
                 kernel);
+            
+            var hasFunctionCalls = FunctionCallContent.GetFunctionCalls(result).Any();
+            initialLLMActivity?.SetTag("llm_call.has_function_calls", hasFunctionCalls);
+            initialLLMActivity?.SetTag("llm_call.response_length", result.Content?.Length ?? 0);
+            AgentTracingService.SetSuccess(initialLLMActivity, $"Initial LLM response received: {result.Content?.Length ?? 0} chars, {(hasFunctionCalls ? "with" : "no")} function calls");
 
-            // Check if manual function call processor is available
+            // Phase 4: Process function calls if manual processor is available
             if (_manualFunctionCallProcessor != null && state.Configuration != null)
             {
-                // Process function calls in a loop until we get a final response with content
+                // Start function call processing loop
+                using var functionCallLoopActivity = AgentTracingService.StartKernelActivity("FunctionCallProcessingLoop", state.AgentId);
+                functionCallLoopActivity?.SetTag("function_loop.max_iterations", 10);
+                
                 const int maxIterations = 10; // Prevent infinite loops
                 int iteration = 0;
                 
@@ -258,17 +297,31 @@ public class ConfigurableKernelService : IConfigurableKernelService
                 {
                     iteration++;
                     
-                    // Process any function calls manually
+                    // Phase 4.1: Process function calls for this iteration
+                    using var iterationActivity = AgentTracingService.StartKernelActivity($"FunctionCallIteration_{iteration}", state.AgentId);
+                    iterationActivity?.SetTag("iteration.number", iteration);
+                    iterationActivity?.SetTag("iteration.has_function_calls", FunctionCallContent.GetFunctionCalls(result).Any());
+                    
                     var functionCallResult = await _manualFunctionCallProcessor.ProcessFunctionCallsAsync(
                         result,
                         kernel,
                         state.AgentId,
                         chatHistory);
 
+                    iterationActivity?.SetTag("iteration.processing_success", functionCallResult.Success);
+                    iterationActivity?.SetTag("iteration.pending_agent_calls", functionCallResult.PendingAgentCalls.Count);
+                    iterationActivity?.SetTag("iteration.errors", functionCallResult.ErrorMessages.Count);
+
                     if (!functionCallResult.Success)
                     {
                         var errorMessage = $"Function call processing failed: {string.Join(", ", functionCallResult.ErrorMessages)}";
                         _logger.LogError(errorMessage);
+                        
+                        iterationActivity?.SetTag("iteration.result", "processing_failed");
+                        AgentTracingService.SetSuccess(iterationActivity, $"Iteration {iteration} failed: function call processing error");
+                        
+                        kernelExecutionActivity?.SetTag("kernel_execution.result", "function_call_error");
+                        AgentTracingService.SetError(kernelExecutionActivity, new InvalidOperationException(errorMessage));
                         return errorMessage;
                     }
 
@@ -279,52 +332,68 @@ public class ConfigurableKernelService : IConfigurableKernelService
                             functionCallResult.PendingAgentCalls.Count);
                     }
 
-                    // Check if we should pause LLM execution for pending agent calls
+                    // Phase 4.2: Check if we should pause LLM execution for pending agent calls
                     if (functionCallResult.ShouldPauseLLMExecution)
                     {
-                        _logger.LogInformation("Pausing LLM execution, waiting for {Count} agent callbacks", 
-                            functionCallResult.PendingCallsRequiringWait);
+                        // Handle execution pause
+                        using var pauseHandlingActivity = AgentTracingService.StartKernelActivity("HandleExecutionPause", state.AgentId);
+                        pauseHandlingActivity?.SetTag("pause.pending_calls", functionCallResult.PendingCallsRequiringWait);
+                        pauseHandlingActivity?.SetTag("pause.wait_for_completion", waitForCompletion);
                         
-                        // Update state to track pending calls
-                        state.WorkingMemory["pending_agent_calls"] = functionCallResult.PendingCallsRequiringWait.ToString();
-                        state.WorkingMemory["execution_paused"] = "true";
-                        state.WorkingMemory["pause_timestamp"] = DateTime.UtcNow.ToString("O");
-
-                        // If waitForCompletion is false (user-interactive), return pause message immediately
                         if (!waitForCompletion)
                         {
-                            var pauseMessage = $"Execution paused - waiting for {functionCallResult.PendingCallsRequiringWait} agent callback(s) to complete.";
-                            state.AddChatMessage("system", pauseMessage);
+                            // Store pause state for later resumption
+                            state.WorkingMemory["execution_paused"] = "true";
+                            state.WorkingMemory["pending_agent_calls"] = functionCallResult.PendingCallsRequiringWait.ToString();
+                            state.WorkingMemory["pause_timestamp"] = DateTime.UtcNow.ToString("O");
+
+                            var pauseMessage = $"LLM execution paused due to {functionCallResult.PendingCallsRequiringWait} pending agent calls. " +
+                                             "Execution will resume when callbacks are received.";
+                            
+                            pauseHandlingActivity?.SetTag("pause.action", "paused_for_callbacks");
+                            AgentTracingService.SetSuccess(pauseHandlingActivity, "Execution paused for pending agent callbacks");
+                            
+                            iterationActivity?.SetTag("iteration.result", "paused");
+                            AgentTracingService.SetSuccess(iterationActivity, $"Iteration {iteration} paused for {functionCallResult.PendingCallsRequiringWait} callbacks");
+                            
+                            functionCallLoopActivity?.SetTag("function_loop.iterations_completed", iteration);
+                            functionCallLoopActivity?.SetTag("function_loop.result", "paused");
+                            AgentTracingService.SetSuccess(functionCallLoopActivity, $"Function call loop paused after {iteration} iterations");
+                            
+                            kernelExecutionActivity?.SetTag("kernel_execution.result", "paused");
+                            kernelExecutionActivity?.SetTag("kernel_execution.iterations", iteration);
+                            AgentTracingService.SetSuccess(kernelExecutionActivity, pauseMessage);
+                            
                             return pauseMessage;
                         }
-                        
-                        // If waitForCompletion is true (agent-to-agent calls), wait for callbacks
-                        _logger.LogInformation("Waiting for agent callbacks to complete before returning result");
-                        
-                        // Wait for all callbacks to complete by checking the WorkingMemory
-                        await WaitForCallbacksToCompleteAsync(state, functionCallResult.PendingCallsRequiringWait);
-                        
-                        // After callbacks complete, get the final result from chat history
-                        var finalResult = await chatService.GetChatMessageContentAsync(
-                            state.ToSemanticKernelChatHistory(),
-                            executionSettings,
-                            kernel);
-                        
-                        result = finalResult;
+                        else
+                        {
+                            pauseHandlingActivity?.SetTag("pause.action", "wait_for_completion");
+                            AgentTracingService.SetSuccess(pauseHandlingActivity, "Waiting for completion mode - continuing execution");
+                        }
                         
                         // Continue processing in case there are more function calls
+                        iterationActivity?.SetTag("iteration.result", "continued");
+                        AgentTracingService.SetSuccess(iterationActivity, $"Iteration {iteration} continued with pending calls");
                         continue;
                     }
 
-                    // If no function calls were processed and we have content, we're done
+                    // Phase 4.3: Check if we should continue or break
                     if (!functionCallResult.ChatHistoryUpdated && !string.IsNullOrEmpty(result.Content))
                     {
+                        iterationActivity?.SetTag("iteration.result", "completed_with_content");
+                        AgentTracingService.SetSuccess(iterationActivity, $"Iteration {iteration} completed with final content");
                         break;
                     }
 
-                    // Get next response from LLM after function results
+                    // Phase 4.4: Get next response from LLM after function results
                     if (functionCallResult.ChatHistoryUpdated)
                     {
+                        using var nextLLMActivity = AgentTracingService.StartKernelActivity($"LLMCall_Iteration_{iteration}", state.AgentId);
+                        nextLLMActivity?.SetTag("llm_call.type", "continuation");
+                        nextLLMActivity?.SetTag("llm_call.iteration", iteration);
+                        nextLLMActivity?.SetTag("llm_call.history_count", chatHistory.Count);
+                        
                         var nextResult = await chatService.GetChatMessageContentAsync(
                             chatHistory,
                             executionSettings,
@@ -332,23 +401,42 @@ public class ConfigurableKernelService : IConfigurableKernelService
                         
                         result = nextResult;
                         
+                        var nextHasFunctionCalls = FunctionCallContent.GetFunctionCalls(result).Any();
+                        nextLLMActivity?.SetTag("llm_call.has_function_calls", nextHasFunctionCalls);
+                        nextLLMActivity?.SetTag("llm_call.response_length", result.Content?.Length ?? 0);
+                        AgentTracingService.SetSuccess(nextLLMActivity, $"Continuation LLM response: {result.Content?.Length ?? 0} chars, {(nextHasFunctionCalls ? "with" : "no")} function calls");
+                        
                         // If this result has content and no function calls, we're done
-                        if (!string.IsNullOrEmpty(result.Content) && 
-                            !FunctionCallContent.GetFunctionCalls(result).Any())
+                        if (!string.IsNullOrEmpty(result.Content) && !nextHasFunctionCalls)
                         {
+                            iterationActivity?.SetTag("iteration.result", "completed_final");
+                            AgentTracingService.SetSuccess(iterationActivity, $"Iteration {iteration} completed - final response received");
                             break;
                         }
+                        
+                        iterationActivity?.SetTag("iteration.result", "continued");
+                        AgentTracingService.SetSuccess(iterationActivity, $"Iteration {iteration} continued - more function calls to process");
                     }
                     else
                     {
                         // No chat history update means no function calls were processed
+                        iterationActivity?.SetTag("iteration.result", "no_updates");
+                        AgentTracingService.SetSuccess(iterationActivity, $"Iteration {iteration} - no function calls processed");
                         break;
                     }
                 }
                 
+                functionCallLoopActivity?.SetTag("function_loop.iterations_completed", iteration);
                 if (iteration >= maxIterations)
                 {
                     _logger.LogWarning("Reached maximum function call iterations ({MaxIterations}) for task execution", maxIterations);
+                    functionCallLoopActivity?.SetTag("function_loop.result", "max_iterations_reached");
+                    AgentTracingService.SetSuccess(functionCallLoopActivity, $"Function call loop completed: reached max iterations ({maxIterations})");
+                }
+                else
+                {
+                    functionCallLoopActivity?.SetTag("function_loop.result", "completed_naturally");
+                    AgentTracingService.SetSuccess(functionCallLoopActivity, $"Function call loop completed naturally after {iteration} iterations");
                 }
             }
             else
@@ -356,26 +444,42 @@ public class ConfigurableKernelService : IConfigurableKernelService
                 // Fallback to adding the result directly if no manual processor
                 chatHistory.Add(result);
                 _logger.LogWarning("Manual function call processor not available, using basic processing");
+                
+                kernelExecutionActivity?.SetTag("kernel_execution.fallback_processing", true);
             }
 
-            var response = result.Content ?? "Task completed but no response generated.";
+            // Phase 5: Finalize response
+            using var responseFinalizationActivity = AgentTracingService.StartKernelActivity("FinalizeResponse", state.AgentId);
+            
+            var response = result.Content ?? "No response generated.";
 
             // Add assistant response to chat history and state
             state.AddChatMessage("assistant", response);
 
             // Update working memory
-            state.WorkingMemory["last_task"] = task;
-            state.WorkingMemory["last_response"] = response;
+            state.WorkingMemory["last_user_message"] = task;
+            state.WorkingMemory["last_assistant_response"] = response;
             state.WorkingMemory["execution_timestamp"] = DateTime.UtcNow.ToString("O");
+            
+            responseFinalizationActivity?.SetTag("response.length", response.Length);
+            responseFinalizationActivity?.SetTag("response.working_memory_updated", true);
+            AgentTracingService.SetSuccess(responseFinalizationActivity, $"Response finalized: {response.Length} chars");
 
             _logger.LogInformation("Task execution completed successfully");
+            
+            kernelExecutionActivity?.SetTag("kernel_execution.result", "success");
+            kernelExecutionActivity?.SetTag("kernel_execution.response_length", response.Length);
+            AgentTracingService.SetSuccess(kernelExecutionActivity, $"Task execution completed: {response.Length} chars response");
+            
             return response;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error executing task with configurable kernel");
-            var errorMessage = $"Task execution failed: {ex.Message}";
-            return errorMessage;
+            
+            kernelExecutionActivity?.SetTag("kernel_execution.result", "error");
+            AgentTracingService.SetError(kernelExecutionActivity, ex);
+            throw;
         }
     }
 
@@ -421,25 +525,46 @@ public class ConfigurableKernelService : IConfigurableKernelService
 
     public async Task<string> ContinueConversationAsync(Kernel kernel, string userMessage, ConfigurableAgentState state, string systemPrompt)
     {
+        // Start conversation continuation tracing
+        using var conversationActivity = AgentTracingService.StartKernelActivity("ConfigurableKernelService.ContinueConversation", state.AgentId);
+        conversationActivity?.SetTag("conversation.agent_id", state.AgentId);
+        conversationActivity?.SetTag("conversation.user_message_length", userMessage.Length);
+        conversationActivity?.SetTag("conversation.system_prompt_length", systemPrompt.Length);
+        
         try
         {
             _logger.LogInformation("Continuing conversation with configurable kernel: {Message}", userMessage);
 
+            // Phase 1: Prepare chat service and history
+            using var chatPreparationActivity = AgentTracingService.StartKernelActivity("PrepareChatForContinuation", state.AgentId);
+            
             var chatService = kernel.GetRequiredService<IChatCompletionService>();
             var chatHistory = state.ToSemanticKernelChatHistory();
+            
+            chatPreparationActivity?.SetTag("chat_prep.existing_history_count", chatHistory.Count);
 
             // Add system message if no chat history exists
             if (chatHistory.Count == 0)
             {
                 chatHistory.AddSystemMessage(systemPrompt);
                 state.AddChatMessage("system", systemPrompt);
+                chatPreparationActivity?.SetTag("chat_prep.system_message_added", true);
+            }
+            else
+            {
+                chatPreparationActivity?.SetTag("chat_prep.system_message_added", false);
             }
 
             // Add the user message
             chatHistory.AddUserMessage(userMessage);
             state.AddChatMessage("user", userMessage);
+            
+            chatPreparationActivity?.SetTag("chat_prep.final_history_count", chatHistory.Count);
+            AgentTracingService.SetSuccess(chatPreparationActivity, $"Chat prepared for continuation with {chatHistory.Count} messages");
 
-            // Configure execution settings for manual function calling
+            // Phase 2: Configure execution settings
+            using var executionSettingsActivity = AgentTracingService.StartKernelActivity("ConfigureConversationExecutionSettings", state.AgentId);
+            
             var executionSettings = new OpenAIPromptExecutionSettings
             {
                 // Enable function calling but don't auto-invoke - we'll handle manually
@@ -447,17 +572,35 @@ public class ConfigurableKernelService : IConfigurableKernelService
                 MaxTokens = state.Configuration?.MaxTokens ?? 4000,
                 Temperature = state.Configuration?.Temperature ?? 0.1
             };
+            
+            executionSettingsActivity?.SetTag("execution_settings.max_tokens", executionSettings.MaxTokens);
+            executionSettingsActivity?.SetTag("execution_settings.temperature", executionSettings.Temperature);
+            executionSettingsActivity?.SetTag("execution_settings.tool_call_behavior", "EnableKernelFunctions");
+            AgentTracingService.SetSuccess(executionSettingsActivity, "Execution settings configured for conversation");
 
-            // Get initial response from LLM (may contain function calls)
+            // Phase 3: Get initial response from LLM
+            using var initialLLMActivity = AgentTracingService.StartKernelActivity("ConversationInitialLLMCall", state.AgentId);
+            initialLLMActivity?.SetTag("llm_call.type", "conversation_initial");
+            initialLLMActivity?.SetTag("llm_call.history_count", chatHistory.Count);
+            
             var result = await chatService.GetChatMessageContentAsync(
                 chatHistory,
                 executionSettings,
                 kernel);
+            
+            var hasFunctionCalls = FunctionCallContent.GetFunctionCalls(result).Any();
+            initialLLMActivity?.SetTag("llm_call.has_function_calls", hasFunctionCalls);
+            initialLLMActivity?.SetTag("llm_call.response_length", result.Content?.Length ?? 0);
+            AgentTracingService.SetSuccess(initialLLMActivity, $"Initial conversation response: {result.Content?.Length ?? 0} chars, {(hasFunctionCalls ? "with" : "no")} function calls");
 
-            // Check if manual function call processor is available
+            // Phase 4: Process function calls if manual processor is available
             if (_manualFunctionCallProcessor != null && state.Configuration != null)
             {
-                // Process function calls in a loop until we get a final response with content
+                // Start function call processing loop for conversation
+                using var functionCallLoopActivity = AgentTracingService.StartKernelActivity("ConversationFunctionCallLoop", state.AgentId);
+                functionCallLoopActivity?.SetTag("function_loop.max_iterations", 10);
+                functionCallLoopActivity?.SetTag("function_loop.context", "conversation");
+                
                 const int maxIterations = 10; // Prevent infinite loops
                 int iteration = 0;
                 
@@ -465,17 +608,35 @@ public class ConfigurableKernelService : IConfigurableKernelService
                 {
                     iteration++;
                     
-                    // Process any function calls manually
+                    // Phase 4.1: Process function calls for this iteration
+                    using var iterationActivity = AgentTracingService.StartKernelActivity($"ConversationIteration_{iteration}", state.AgentId);
+                    iterationActivity?.SetTag("iteration.number", iteration);
+                    iterationActivity?.SetTag("iteration.has_function_calls", FunctionCallContent.GetFunctionCalls(result).Any());
+                    iterationActivity?.SetTag("iteration.context", "conversation");
+                    
                     var functionCallResult = await _manualFunctionCallProcessor.ProcessFunctionCallsAsync(
                         result,
                         kernel,
                         state.AgentId,
                         chatHistory);
 
+                    iterationActivity?.SetTag("iteration.processing_success", functionCallResult.Success);
+                    iterationActivity?.SetTag("iteration.pending_agent_calls", functionCallResult.PendingAgentCalls.Count);
+                    iterationActivity?.SetTag("iteration.errors", functionCallResult.ErrorMessages.Count);
+
                     if (!functionCallResult.Success)
                     {
                         var errorMessage = $"Function call processing failed: {string.Join(", ", functionCallResult.ErrorMessages)}";
                         _logger.LogError(errorMessage);
+                        
+                        iterationActivity?.SetTag("iteration.result", "processing_failed");
+                        AgentTracingService.SetSuccess(iterationActivity, $"Conversation iteration {iteration} failed: function call processing error");
+                        
+                        functionCallLoopActivity?.SetTag("function_loop.result", "error");
+                        AgentTracingService.SetSuccess(functionCallLoopActivity, "Function call loop failed in conversation");
+                        
+                        conversationActivity?.SetTag("conversation.result", "function_call_error");
+                        AgentTracingService.SetError(conversationActivity, new InvalidOperationException(errorMessage));
                         return errorMessage;
                     }
 
@@ -486,32 +647,56 @@ public class ConfigurableKernelService : IConfigurableKernelService
                             functionCallResult.PendingAgentCalls.Count);
                     }
 
-                    // Check if we should pause LLM execution for pending agent calls
+                    // Phase 4.2: Check if we should pause LLM execution for pending agent calls
                     if (functionCallResult.ShouldPauseLLMExecution)
                     {
-                        _logger.LogInformation("Pausing LLM execution, waiting for {Count} agent callbacks", 
+                        using var pauseHandlingActivity = AgentTracingService.StartKernelActivity("HandleConversationPause", state.AgentId);
+                        pauseHandlingActivity?.SetTag("pause.pending_calls", functionCallResult.PendingCallsRequiringWait);
+                        pauseHandlingActivity?.SetTag("pause.context", "conversation");
+                        
+                        _logger.LogInformation("Pausing conversation execution, waiting for {Count} agent callbacks", 
                             functionCallResult.PendingCallsRequiringWait);
                         
-                        // Update state to track pending calls
-                        state.WorkingMemory["pending_agent_calls"] = functionCallResult.PendingCallsRequiringWait.ToString();
+                        // For conversations, we always use waitForCompletion=false pattern
                         state.WorkingMemory["execution_paused"] = "true";
+                        state.WorkingMemory["pending_agent_calls"] = functionCallResult.PendingCallsRequiringWait.ToString();
                         state.WorkingMemory["pause_timestamp"] = DateTime.UtcNow.ToString("O");
 
-                        // Return special message indicating execution is paused
-                        var pauseMessage = $"Execution paused - waiting for {functionCallResult.PendingCallsRequiringWait} agent callback(s) to complete.";
-                        state.AddChatMessage("system", pauseMessage);
+                        var pauseMessage = $"Conversation paused - waiting for {functionCallResult.PendingCallsRequiringWait} agent callback(s) to complete.";
+                        
+                        pauseHandlingActivity?.SetTag("pause.action", "paused_for_callbacks");
+                        AgentTracingService.SetSuccess(pauseHandlingActivity, "Conversation paused for pending agent callbacks");
+                        
+                        iterationActivity?.SetTag("iteration.result", "paused");
+                        AgentTracingService.SetSuccess(iterationActivity, $"Conversation iteration {iteration} paused for {functionCallResult.PendingCallsRequiringWait} callbacks");
+                        
+                        functionCallLoopActivity?.SetTag("function_loop.iterations_completed", iteration);
+                        functionCallLoopActivity?.SetTag("function_loop.result", "paused");
+                        AgentTracingService.SetSuccess(functionCallLoopActivity, $"Conversation function call loop paused after {iteration} iterations");
+                        
+                        conversationActivity?.SetTag("conversation.result", "paused");
+                        conversationActivity?.SetTag("conversation.iterations", iteration);
+                        AgentTracingService.SetSuccess(conversationActivity, pauseMessage);
+                        
                         return pauseMessage;
                     }
 
-                    // If no function calls were processed and we have content, we're done
+                    // Phase 4.3: Check if we should continue or break
                     if (!functionCallResult.ChatHistoryUpdated && !string.IsNullOrEmpty(result.Content))
                     {
+                        iterationActivity?.SetTag("iteration.result", "completed_with_content");
+                        AgentTracingService.SetSuccess(iterationActivity, $"Conversation iteration {iteration} completed with final content");
                         break;
                     }
 
-                    // Get next response from LLM after function results
+                    // Phase 4.4: Get next response from LLM after function results
                     if (functionCallResult.ChatHistoryUpdated)
                     {
+                        using var nextLLMActivity = AgentTracingService.StartKernelActivity($"ConversationLLMCall_Iteration_{iteration}", state.AgentId);
+                        nextLLMActivity?.SetTag("llm_call.type", "conversation_continuation");
+                        nextLLMActivity?.SetTag("llm_call.iteration", iteration);
+                        nextLLMActivity?.SetTag("llm_call.history_count", chatHistory.Count);
+                        
                         var nextResult = await chatService.GetChatMessageContentAsync(
                             chatHistory,
                             executionSettings,
@@ -519,23 +704,42 @@ public class ConfigurableKernelService : IConfigurableKernelService
                         
                         result = nextResult;
                         
+                        var nextHasFunctionCalls = FunctionCallContent.GetFunctionCalls(result).Any();
+                        nextLLMActivity?.SetTag("llm_call.has_function_calls", nextHasFunctionCalls);
+                        nextLLMActivity?.SetTag("llm_call.response_length", result.Content?.Length ?? 0);
+                        AgentTracingService.SetSuccess(nextLLMActivity, $"Conversation continuation response: {result.Content?.Length ?? 0} chars, {(nextHasFunctionCalls ? "with" : "no")} function calls");
+                        
                         // If this result has content and no function calls, we're done
-                        if (!string.IsNullOrEmpty(result.Content) && 
-                            !FunctionCallContent.GetFunctionCalls(result).Any())
+                        if (!string.IsNullOrEmpty(result.Content) && !nextHasFunctionCalls)
                         {
+                            iterationActivity?.SetTag("iteration.result", "completed_final");
+                            AgentTracingService.SetSuccess(iterationActivity, $"Conversation iteration {iteration} completed - final response received");
                             break;
                         }
+                        
+                        iterationActivity?.SetTag("iteration.result", "continued");
+                        AgentTracingService.SetSuccess(iterationActivity, $"Conversation iteration {iteration} continued - more function calls to process");
                     }
                     else
                     {
                         // No chat history update means no function calls were processed
+                        iterationActivity?.SetTag("iteration.result", "no_updates");
+                        AgentTracingService.SetSuccess(iterationActivity, $"Conversation iteration {iteration} - no function calls processed");
                         break;
                     }
                 }
                 
+                functionCallLoopActivity?.SetTag("function_loop.iterations_completed", iteration);
                 if (iteration >= maxIterations)
                 {
                     _logger.LogWarning("Reached maximum function call iterations ({MaxIterations}) for conversation", maxIterations);
+                    functionCallLoopActivity?.SetTag("function_loop.result", "max_iterations_reached");
+                    AgentTracingService.SetSuccess(functionCallLoopActivity, $"Conversation function call loop completed: reached max iterations ({maxIterations})");
+                }
+                else
+                {
+                    functionCallLoopActivity?.SetTag("function_loop.result", "completed_naturally");
+                    AgentTracingService.SetSuccess(functionCallLoopActivity, $"Conversation function call loop completed naturally after {iteration} iterations");
                 }
             }
             else
@@ -543,8 +747,13 @@ public class ConfigurableKernelService : IConfigurableKernelService
                 // Fallback to adding the result directly if no manual processor
                 chatHistory.Add(result);
                 _logger.LogWarning("Manual function call processor not available, using basic processing");
+                
+                conversationActivity?.SetTag("conversation.fallback_processing", true);
             }
 
+            // Phase 5: Finalize conversation response
+            using var responseFinalizationActivity = AgentTracingService.StartKernelActivity("FinalizeConversationResponse", state.AgentId);
+            
             var response = result.Content ?? "No response generated.";
 
             // Add assistant response to chat history and state
@@ -554,15 +763,26 @@ public class ConfigurableKernelService : IConfigurableKernelService
             state.WorkingMemory["last_user_message"] = userMessage;
             state.WorkingMemory["last_assistant_response"] = response;
             state.WorkingMemory["conversation_timestamp"] = DateTime.UtcNow.ToString("O");
+            
+            responseFinalizationActivity?.SetTag("response.length", response.Length);
+            responseFinalizationActivity?.SetTag("response.working_memory_updated", true);
+            AgentTracingService.SetSuccess(responseFinalizationActivity, $"Conversation response finalized: {response.Length} chars");
 
             _logger.LogInformation("Conversation continued successfully");
+            
+            conversationActivity?.SetTag("conversation.result", "success");
+            conversationActivity?.SetTag("conversation.response_length", response.Length);
+            AgentTracingService.SetSuccess(conversationActivity, $"Conversation continued successfully: {response.Length} chars response");
+            
             return response;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error continuing conversation with configurable kernel");
-            var errorMessage = $"Conversation failed: {ex.Message}";
-            return errorMessage;
+            
+            conversationActivity?.SetTag("conversation.result", "error");
+            AgentTracingService.SetError(conversationActivity, ex);
+            throw;
         }
     }
 

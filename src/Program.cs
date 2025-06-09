@@ -7,6 +7,11 @@ using PsiOrleans.Grains;
 using PsiOrleans.Models;
 using PsiOrleans.Services;
 using PsiOrleans.Examples;
+// OpenTelemetry imports for distributed tracing
+using OpenTelemetry;
+using OpenTelemetry.Trace;
+using OpenTelemetry.Resources;
+using System.Diagnostics;
 
 namespace PsiOrleans;
 
@@ -74,6 +79,35 @@ class Program
                 // Register function registry and related services
                 services.AddSingleton<IKernelFunctionRegistry, KernelFunctionRegistry>();
                 services.AddHostedService<FunctionRegistryInitializationService>();
+                
+                // Configure OpenTelemetry for distributed tracing
+                services.AddOpenTelemetry()
+                    .WithTracing(builder =>
+                    {
+                        builder
+                            .AddSource("Microsoft.Orleans.Runtime")    // Orleans runtime ActivitySource
+                            .AddSource("Microsoft.Orleans.Application") // Orleans application ActivitySource  
+                            .AddSource("PsiOrleans.Agent")              // Custom ActivitySource for agent operations
+                            .AddSource("PsiOrleans.Kernel")             // Custom ActivitySource for semantic kernel operations
+                            .AddSource("PsiOrleans.Orleans.Grain")      // Custom ActivitySource for Orleans grain operations
+                            .SetResourceBuilder(ResourceBuilder.CreateDefault()
+                                .AddService("psi-orleans-agents", "1.0.0"))
+                            .AddHttpClientInstrumentation(options =>
+                            {
+                                options.RecordException = true;
+                                options.FilterHttpRequestMessage = (httpRequestMessage) =>
+                                {
+                                    // Filter out health check and other noise
+                                    return !httpRequestMessage.RequestUri?.AbsolutePath.Contains("/health") == true;
+                                };
+                            })
+                            .AddOtlpExporter(options =>
+                            {
+                                // Export to OpenTelemetry Collector
+                                options.Endpoint = new Uri("http://localhost:4315");
+                                options.Protocol = OpenTelemetry.Exporter.OtlpExportProtocol.Grpc;
+                            });
+                    });
             })
             .UseOrleans((context, builder) =>
             {
@@ -84,6 +118,8 @@ class Program
                         logging.AddConsole();
                         logging.SetMinimumLevel(LogLevel.Information);
                     })
+                    // Enable Orleans OpenTelemetry integration
+                    .AddActivityPropagation()
                     .ConfigureServices(services =>
                     {
                         // Register configurable kernel service

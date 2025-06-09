@@ -5,6 +5,7 @@ using Microsoft.SemanticKernel.Connectors.OpenAI;
 using Orleans;
 using PsiOrleans.Grains;
 using PsiOrleans.Models;
+using PsiOrleans.Services;
 
 namespace PsiOrleans.Services;
 
@@ -39,27 +40,60 @@ public class SpecializedStateMachine : IAgentStateMachine
     /// </summary>
     public async Task<string> ExecuteTaskAsync(string task, Kernel kernel, ConfigurableAgentState state, AgentConfiguration config)
     {
+        // Start specialized execution tracing
+        using var specializedExecutionActivity = AgentTracingService.StartAgentActivity("SpecializedStateMachine.ExecuteTask", state.AgentId, task);
+        specializedExecutionActivity?.SetTag("specialized.execution_pattern", "SyncDirect");
+        specializedExecutionActivity?.SetTag("specialized.agent_id", state.AgentId);
+        specializedExecutionActivity?.SetTag("specialized.task_length", task.Length);
+        specializedExecutionActivity?.SetTag("specialized.parent_id", state.ParentAgentId ?? "none");
+        
         _logger.LogInformation("SpecializedStateMachine executing task for agent {AgentId}: {Task}", 
             state.AgentId, task);
 
         if (kernel == null)
         {
-            throw new InvalidOperationException("Kernel is not configured for specialized execution");
+            var error = new InvalidOperationException("Kernel is not configured for specialized execution");
+            AgentTracingService.SetError(specializedExecutionActivity, error);
+            throw error;
         }
 
         try
         {
-            // Sync Direct Execution Pattern:
-            // Execute with specialized tools (normal blocking tools) and await results immediately
+            // Phase 1: Sync Direct Execution Pattern - Execute with specialized tools
+            using var directExecutionActivity = AgentTracingService.StartAgentActivity("ExecuteWithDirectTools", state.AgentId, task);
+            directExecutionActivity?.SetTag("direct_execution.task", task.Length > 200 ? task.Substring(0, 200) + "..." : task);
+            directExecutionActivity?.SetTag("direct_execution.pattern", "ToolCalling");
+            directExecutionActivity?.SetTag("direct_execution.kernel_plugins", kernel.Plugins.Count);
+            
             var result = await ExecuteWithDirectTools(task, kernel, state, config);
             
-            // Send completion callback to parent if exists
+            directExecutionActivity?.SetTag("direct_execution.result_length", result.Length);
+            directExecutionActivity?.SetTag("direct_execution.success", true);
+            AgentTracingService.SetSuccess(directExecutionActivity, "Direct tool execution completed successfully");
+            
+            // Phase 2: Send completion callback to parent if exists
             if (!string.IsNullOrEmpty(state.ParentAgentId))
             {
+                using var callbackSendActivity = AgentTracingService.StartAgentActivity("SendCompletionCallbackToParent", state.AgentId);
+                callbackSendActivity?.SetTag("completion_callback.parent_id", state.ParentAgentId);
+                callbackSendActivity?.SetTag("completion_callback.success", true);
+                callbackSendActivity?.SetTag("completion_callback.result_length", result.Length);
+                
                 await SendCompletionCallback(state.ParentAgentId, result, true);
+                
+                AgentTracingService.SetSuccess(callbackSendActivity, $"Success callback sent to parent {state.ParentAgentId}");
+            }
+            else
+            {
+                specializedExecutionActivity?.SetTag("specialized.parent_callback", "not_needed_no_parent");
             }
             
             _logger.LogInformation("SpecializedStateMachine completed task for agent {AgentId}", state.AgentId);
+            
+            specializedExecutionActivity?.SetTag("specialized.result_length", result.Length);
+            specializedExecutionActivity?.SetTag("specialized.completion_callback_sent", !string.IsNullOrEmpty(state.ParentAgentId));
+            AgentTracingService.SetSuccess(specializedExecutionActivity, $"Specialized execution completed: {result.Length} chars result");
+            
             return result;
         }
         catch (Exception ex)
@@ -69,10 +103,17 @@ public class SpecializedStateMachine : IAgentStateMachine
             // Send failure callback to parent if exists
             if (!string.IsNullOrEmpty(state.ParentAgentId))
             {
+                using var failureCallbackActivity = AgentTracingService.StartAgentActivity("SendFailureCallbackToParent", state.AgentId);
+                failureCallbackActivity?.SetTag("failure_callback.parent_id", state.ParentAgentId);
+                failureCallbackActivity?.SetTag("failure_callback.error", ex.Message);
+                
                 var errorMessage = $"Specialized task failed: {ex.Message}";
                 await SendCompletionCallback(state.ParentAgentId, errorMessage, false);
+                
+                AgentTracingService.SetSuccess(failureCallbackActivity, "Failure callback sent to parent");
             }
             
+            AgentTracingService.SetError(specializedExecutionActivity, ex);
             throw;
         }
     }
@@ -83,10 +124,19 @@ public class SpecializedStateMachine : IAgentStateMachine
     /// </summary>
     public Task ProcessCallbackAsync(string callId, string message, bool isSuccess, ConfigurableAgentState state, Kernel kernel)
     {
+        // Start unexpected callback tracing
+        using var unexpectedCallbackActivity = AgentTracingService.StartAgentActivity("SpecializedStateMachine.UnexpectedCallback", state.AgentId);
+        unexpectedCallbackActivity?.SetTag("unexpected.call_id", callId);
+        unexpectedCallbackActivity?.SetTag("unexpected.success", isSuccess);
+        unexpectedCallbackActivity?.SetTag("unexpected.message_length", message.Length);
+        unexpectedCallbackActivity?.SetTag("unexpected.reason", "specialized_agents_dont_have_children");
+        
         // Specialized agents don't typically receive callbacks from children
         // This method can be empty or log unexpected callbacks
         _logger.LogWarning("SpecializedStateMachine received unexpected callback {CallId} for agent {AgentId}: {Message}", 
             callId, state.AgentId, message);
+        
+        AgentTracingService.SetSuccess(unexpectedCallbackActivity, "Unexpected callback logged (specialized agents don't manage children)");
         
         return Task.CompletedTask;
     }

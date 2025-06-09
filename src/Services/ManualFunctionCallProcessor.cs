@@ -35,6 +35,11 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
         ChatHistory chatHistory,
         CancellationToken cancellationToken = default)
     {
+        // Start function call processing tracing
+        using var functionCallProcessingActivity = AgentTracingService.StartAgentActivity("ManualFunctionCallProcessor.ProcessFunctionCalls", agentId);
+        functionCallProcessingActivity?.SetTag("function_call.agent_id", agentId);
+        functionCallProcessingActivity?.SetTag("function_call.chat_result_content", !string.IsNullOrEmpty(chatResult.Content));
+        
         var result = new ManualFunctionCallResult();
         
         try
@@ -45,14 +50,26 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
             // Extract function calls from the chat result
             var functionCalls = FunctionCallContent.GetFunctionCalls(chatResult).ToArray();
             
+            functionCallProcessingActivity?.SetTag("function_call.total_calls", functionCalls.Length);
+            
             if (functionCalls.Length == 0)
             {
                 _logger.LogDebug("No function calls found in chat result");
+                AgentTracingService.SetSuccess(functionCallProcessingActivity, "No function calls to process");
                 return result;
             }
 
             _logger.LogInformation("Processing {Count} function calls for agent {AgentId}", 
                 functionCalls.Length, agentId);
+
+            // Categorize function calls for tracing
+            var agentCalls = functionCalls.Where(fc => IsAgentFunction(fc.FunctionName, fc.PluginName)).ToArray();
+            var regularCalls = functionCalls.Where(fc => !IsAgentFunction(fc.FunctionName, fc.PluginName)).ToArray();
+            
+            functionCallProcessingActivity?.SetTag("function_call.agent_calls", agentCalls.Length);
+            functionCallProcessingActivity?.SetTag("function_call.regular_calls", regularCalls.Length);
+            functionCallProcessingActivity?.SetTag("function_call.agent_call_names", string.Join(", ", agentCalls.Select(fc => fc.FunctionName).Take(3)));
+            functionCallProcessingActivity?.SetTag("function_call.regular_call_names", string.Join(", ", regularCalls.Select(fc => fc.FunctionName).Take(3)));
 
             // Process each function call
             foreach (var functionCall in functionCalls)
@@ -85,6 +102,11 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
                 "Pending agent calls: {PendingCount}, Errors: {ErrorCount}", 
                 agentId, result.PendingAgentCalls.Count, result.ErrorMessages.Count);
 
+            functionCallProcessingActivity?.SetTag("function_call.pending_agent_calls", result.PendingAgentCalls.Count);
+            functionCallProcessingActivity?.SetTag("function_call.error_count", result.ErrorMessages.Count);
+            functionCallProcessingActivity?.SetTag("function_call.should_pause_llm", result.ShouldPauseLLMExecution);
+            AgentTracingService.SetSuccess(functionCallProcessingActivity, $"Function call processing completed: {result.PendingAgentCalls.Count} pending, {result.ErrorMessages.Count} errors");
+
             return result;
         }
         catch (Exception ex)
@@ -92,6 +114,8 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
             _logger.LogError(ex, "Critical error in ProcessFunctionCallsAsync for agent {AgentId}", agentId);
             result.Success = false;
             result.ErrorMessages.Add($"Critical processing error: {ex.Message}");
+            
+            AgentTracingService.SetError(functionCallProcessingActivity, ex);
             return result;
         }
     }
@@ -104,22 +128,57 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
         ManualFunctionCallResult result,
         CancellationToken cancellationToken)
     {
-        // Validate function call
-        if (!TryValidateFunctionCall(functionCall, kernel, out var function, out var errorMessage))
+        // Start single function call tracing
+        using var singleCallActivity = AgentTracingService.StartAgentActivity("ProcessSingleFunctionCall", agentId);
+        singleCallActivity?.SetTag("single_call.function_name", functionCall.FunctionName);
+        singleCallActivity?.SetTag("single_call.plugin_name", functionCall.PluginName ?? "none");
+        singleCallActivity?.SetTag("single_call.function_id", functionCall.Id ?? "none");
+        singleCallActivity?.SetTag("single_call.is_agent_function", IsAgentFunction(functionCall.FunctionName, functionCall.PluginName));
+        
+        try
         {
-            result.ErrorMessages.Add(errorMessage!);
-            AddErrorToChatHistory(chatHistory, functionCall, errorMessage!);
-            return;
-        }
+            // Phase 1: Validate function call
+            using var validationActivity = AgentTracingService.StartAgentActivity("ValidateFunctionCall", agentId);
+            validationActivity?.SetTag("validation.function_name", functionCall.FunctionName);
+            validationActivity?.SetTag("validation.has_exception", functionCall.Exception != null);
+            
+            if (!TryValidateFunctionCall(functionCall, kernel, out var function, out var errorMessage))
+            {
+                result.ErrorMessages.Add(errorMessage!);
+                AddErrorToChatHistory(chatHistory, functionCall, errorMessage!);
+                
+                validationActivity?.SetTag("validation.result", "failed");
+                validationActivity?.SetTag("validation.error", errorMessage);
+                AgentTracingService.SetSuccess(validationActivity, $"Function validation failed: {errorMessage}");
+                
+                singleCallActivity?.SetTag("single_call.result", "validation_failed");
+                AgentTracingService.SetSuccess(singleCallActivity, $"Function call validation failed: {errorMessage}");
+                return;
+            }
+            
+            validationActivity?.SetTag("validation.result", "success");
+            AgentTracingService.SetSuccess(validationActivity, "Function call validation passed");
 
-        // Check if this is an agent communication function
-        if (IsAgentFunction(functionCall.FunctionName, functionCall.PluginName))
-        {
-            await ProcessAgentFunctionCallAsync(functionCall, agentId, chatHistory, result, cancellationToken);
+            // Phase 2: Route to appropriate processor
+            if (IsAgentFunction(functionCall.FunctionName, functionCall.PluginName))
+            {
+                singleCallActivity?.SetTag("single_call.type", "agent_function");
+                await ProcessAgentFunctionCallAsync(functionCall, agentId, chatHistory, result, cancellationToken);
+            }
+            else
+            {
+                singleCallActivity?.SetTag("single_call.type", "regular_function");
+                await ProcessRegularFunctionCallAsync(functionCall, function!, kernel, chatHistory, cancellationToken);
+            }
+            
+            singleCallActivity?.SetTag("single_call.result", "success");
+            AgentTracingService.SetSuccess(singleCallActivity, $"Function call processed successfully: {functionCall.FunctionName}");
         }
-        else
+        catch (Exception ex)
         {
-            await ProcessRegularFunctionCallAsync(functionCall, function!, kernel, chatHistory, cancellationToken);
+            singleCallActivity?.SetTag("single_call.result", "error");
+            AgentTracingService.SetError(singleCallActivity, ex);
+            throw;
         }
     }
 
@@ -130,8 +189,18 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
         ManualFunctionCallResult result,
         CancellationToken cancellationToken)
     {
+        // Start agent function call processing tracing
+        using var agentCallActivity = AgentTracingService.StartAgentActivity("ProcessAgentFunctionCall", callingAgentId);
+        agentCallActivity?.SetTag("agent_call.function_name", functionCall.FunctionName);
+        agentCallActivity?.SetTag("agent_call.calling_agent", callingAgentId);
+        agentCallActivity?.SetTag("agent_call.function_id", functionCall.Id ?? "none");
+        agentCallActivity?.SetTag("agent_call.pattern", "NonBlocking");
+        
         try
         {
+            // Phase 1: Extract target agent ID
+            using var targetExtractionActivity = AgentTracingService.StartAgentActivity("ExtractTargetAgentId", callingAgentId);
+            
             var targetAgentId = ExtractTargetAgentId(functionCall.FunctionName);
             
             // For call_agent function, extract the real target agent ID from arguments
@@ -143,6 +212,13 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
                     var error = $"No agent ID found in arguments for call_agent function";
                     result.ErrorMessages.Add(error);
                     AddErrorToChatHistory(chatHistory, functionCall, error);
+                    
+                    targetExtractionActivity?.SetTag("extraction.result", "failed");
+                    targetExtractionActivity?.SetTag("extraction.error", "no_agent_id_in_arguments");
+                    AgentTracingService.SetSuccess(targetExtractionActivity, "Target extraction failed: no agent ID in arguments");
+                    
+                    agentCallActivity?.SetTag("agent_call.result", "target_extraction_failed");
+                    AgentTracingService.SetSuccess(agentCallActivity, "Agent call failed: no target agent ID");
                     return;
                 }
             }
@@ -151,20 +227,46 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
                 var error = $"Could not extract target agent ID from function {functionCall.FunctionName}";
                 result.ErrorMessages.Add(error);
                 AddErrorToChatHistory(chatHistory, functionCall, error);
+                
+                targetExtractionActivity?.SetTag("extraction.result", "failed");
+                targetExtractionActivity?.SetTag("extraction.error", "could_not_extract");
+                AgentTracingService.SetSuccess(targetExtractionActivity, "Target extraction failed: could not extract from function name");
+                
+                agentCallActivity?.SetTag("agent_call.result", "target_extraction_failed");
+                AgentTracingService.SetSuccess(agentCallActivity, "Agent call failed: could not extract target");
                 return;
             }
+            
+            targetExtractionActivity?.SetTag("extraction.result", "success");
+            targetExtractionActivity?.SetTag("extraction.target_agent", targetAgentId);
+            AgentTracingService.SetSuccess(targetExtractionActivity, $"Target agent extracted: {targetAgentId}");
 
-            // Extract query from arguments
+            // Phase 2: Extract query from arguments
+            using var queryExtractionActivity = AgentTracingService.StartAgentActivity("ExtractQueryFromArguments", callingAgentId);
+            
             var query = ExtractQueryFromArguments(functionCall.Arguments);
             if (string.IsNullOrEmpty(query))
             {
                 var error = $"No query found in arguments for agent call {functionCall.FunctionName}";
                 result.ErrorMessages.Add(error);
                 AddErrorToChatHistory(chatHistory, functionCall, error);
+                
+                queryExtractionActivity?.SetTag("query_extraction.result", "failed");
+                queryExtractionActivity?.SetTag("query_extraction.error", "no_query_found");
+                AgentTracingService.SetSuccess(queryExtractionActivity, "Query extraction failed: no query in arguments");
+                
+                agentCallActivity?.SetTag("agent_call.result", "query_extraction_failed");
+                AgentTracingService.SetSuccess(agentCallActivity, "Agent call failed: no query found");
                 return;
             }
+            
+            queryExtractionActivity?.SetTag("query_extraction.result", "success");
+            queryExtractionActivity?.SetTag("query_extraction.query_length", query.Length);
+            AgentTracingService.SetSuccess(queryExtractionActivity, $"Query extracted: {query.Length} chars");
 
-            // Create pending call record
+            // Phase 3: Create pending call record
+            using var pendingCallCreationActivity = AgentTracingService.StartAgentActivity("CreatePendingAgentCall", callingAgentId);
+            
             var pendingCall = new PendingAgentCall
             {
                 CallId = functionCall.Id ?? Guid.NewGuid().ToString(),
@@ -176,6 +278,11 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
                 Query = query,
                 Status = PendingCallStatus.Pending
             };
+            
+            pendingCallCreationActivity?.SetTag("pending_call.call_id", pendingCall.CallId);
+            pendingCallCreationActivity?.SetTag("pending_call.target_agent", targetAgentId);
+            pendingCallCreationActivity?.SetTag("pending_call.query_length", query.Length);
+            AgentTracingService.SetSuccess(pendingCallCreationActivity, $"Pending call created: {pendingCall.CallId}");
 
             // Register the pending call
             _callbackManager.RegisterPendingCall(pendingCall);
@@ -187,7 +294,12 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
             
             AddFunctionResultToChatHistory(chatHistory, functionCall, immediateResponse);
 
-            // Initiate agent call asynchronously (fire and forget)
+            // Phase 4: Initiate agent call asynchronously (fire and forget)
+            using var asyncExecutionActivity = AgentTracingService.StartAgentActivity("InitiateAsyncAgentExecution", callingAgentId);
+            asyncExecutionActivity?.SetTag("async_execution.call_id", pendingCall.CallId);
+            asyncExecutionActivity?.SetTag("async_execution.target_agent", targetAgentId);
+            asyncExecutionActivity?.SetTag("async_execution.pattern", "FireAndForget");
+            
             _ = Task.Run(async () =>
             {
                 try
@@ -206,9 +318,16 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
                     await _callbackManager.NotifyCallCompletedAsync(pendingCall);
                 }
             }, cancellationToken);
+            
+            AgentTracingService.SetSuccess(asyncExecutionActivity, "Async agent execution initiated");
 
             _logger.LogInformation("Initiated non-blocking agent call {CallId} from {CallingAgent} to {TargetAgent}", 
                 pendingCall.CallId, callingAgentId, targetAgentId);
+            
+            agentCallActivity?.SetTag("agent_call.result", "initiated");
+            agentCallActivity?.SetTag("agent_call.target_agent", targetAgentId);
+            agentCallActivity?.SetTag("agent_call.call_id", pendingCall.CallId);
+            AgentTracingService.SetSuccess(agentCallActivity, $"Agent call initiated: {callingAgentId} → {targetAgentId} (CallId: {pendingCall.CallId})");
         }
         catch (Exception ex)
         {
@@ -216,29 +335,62 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
             var error = $"Error initiating agent call: {ex.Message}";
             result.ErrorMessages.Add(error);
             AddErrorToChatHistory(chatHistory, functionCall, error);
+            
+            agentCallActivity?.SetTag("agent_call.result", "error");
+            AgentTracingService.SetError(agentCallActivity, ex);
         }
     }
 
     private async Task ExecuteAgentCallAsync(PendingAgentCall pendingCall)
     {
+        // Start agent call execution tracing
+        using var agentExecutionActivity = AgentTracingService.StartAgentActivity("ExecuteAgentCall", pendingCall.CallingAgentId);
+        agentExecutionActivity?.SetTag("execution.call_id", pendingCall.CallId);
+        agentExecutionActivity?.SetTag("execution.target_agent", pendingCall.TargetAgentId);
+        agentExecutionActivity?.SetTag("execution.calling_agent", pendingCall.CallingAgentId);
+        agentExecutionActivity?.SetTag("execution.query_length", pendingCall.Query?.Length ?? 0);
+        
         try
         {
             _logger.LogInformation("Executing agent call {CallId} to {TargetAgentId}", pendingCall.CallId, pendingCall.TargetAgentId);
             
             pendingCall.Status = PendingCallStatus.InProgress;
+            agentExecutionActivity?.SetTag("execution.status", "InProgress");
 
-            // Get target agent grain
+            // Phase 1: Get target agent grain
+            using var grainLookupActivity = AgentTracingService.StartAgentActivity("GetTargetAgentGrain", pendingCall.CallingAgentId);
+            grainLookupActivity?.SetTag("grain_lookup.target_agent", pendingCall.TargetAgentId);
+            
             var targetAgent = _clusterClient.GetGrain<IConfigurableAgentGrain>(pendingCall.TargetAgentId);
+            
+            AgentTracingService.SetSuccess(grainLookupActivity, "Target agent grain obtained");
 
-            // Check if target agent is initialized with retry logic
+            // Phase 2: Check if target agent is initialized with retry logic
+            using var initializationCheckActivity = AgentTracingService.StartAgentActivity("WaitForAgentInitialization", pendingCall.CallingAgentId);
+            initializationCheckActivity?.SetTag("initialization.target_agent", pendingCall.TargetAgentId);
+            
             var isInitialized = await WaitForAgentInitializationAsync(targetAgent, pendingCall.TargetAgentId);
             if (!isInitialized)
             {
-                throw new InvalidOperationException($"Target agent {pendingCall.TargetAgentId} failed to initialize after waiting period");
+                var error = new InvalidOperationException($"Target agent {pendingCall.TargetAgentId} failed to initialize after waiting period");
+                
+                initializationCheckActivity?.SetTag("initialization.result", "failed");
+                AgentTracingService.SetError(initializationCheckActivity, error);
+                throw error;
             }
+            
+            initializationCheckActivity?.SetTag("initialization.result", "success");
+            AgentTracingService.SetSuccess(initializationCheckActivity, "Target agent initialization confirmed");
 
-            // Execute task on target agent
+            // Phase 3: Execute task on target agent
+            using var taskExecutionActivity = AgentTracingService.StartAgentActivity("ExecuteTaskOnTargetAgent", pendingCall.CallingAgentId);
+            taskExecutionActivity?.SetTag("task_execution.target_agent", pendingCall.TargetAgentId);
+            taskExecutionActivity?.SetTag("task_execution.query", pendingCall.Query?.Length > 100 ? pendingCall.Query.Substring(0, 100) + "..." : pendingCall.Query);
+            
             var result = await targetAgent.ExecuteTaskAsync(pendingCall.Query);
+            
+            taskExecutionActivity?.SetTag("task_execution.result_length", result?.Length ?? 0);
+            AgentTracingService.SetSuccess(taskExecutionActivity, $"Task executed on target agent: {result?.Length ?? 0} chars result");
 
             // Update pending call with result
             pendingCall.Result = result;
@@ -250,6 +402,10 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
             // TODO: this notification is wrong, the returned result doesn't mean the task is done. We need to track the state of the sent task
             // And only notify the caller when call back is received and the LLM deems the task is completed or failed
             await _callbackManager.NotifyCallCompletedAsync(pendingCall);
+            
+            agentExecutionActivity?.SetTag("execution.status", "Completed");
+            agentExecutionActivity?.SetTag("execution.result_length", result?.Length ?? 0);
+            AgentTracingService.SetSuccess(agentExecutionActivity, $"Agent call completed successfully: {pendingCall.CallId}");
         }
         catch (Exception ex)
         {
@@ -260,6 +416,9 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
             pendingCall.CompletedAt = DateTime.UtcNow;
 
             await _callbackManager.NotifyCallCompletedAsync(pendingCall);
+            
+            agentExecutionActivity?.SetTag("execution.status", "Failed");
+            AgentTracingService.SetError(agentExecutionActivity, ex);
             throw;
         }
     }
