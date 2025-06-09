@@ -47,15 +47,25 @@ public class SpecializedStateMachine : IAgentStateMachine
         specializedExecutionActivity?.SetTag("specialized.task_length", task.Length);
         specializedExecutionActivity?.SetTag("specialized.parent_id", state.ParentAgentId ?? "none");
         
-        _logger.LogInformation("SpecializedStateMachine executing task for agent {AgentId}: {Task}", 
-            state.AgentId, task);
+        // 🟢 FLOW_START: Specialized state machine execution flow
+        _logger.LogInformation("🟢 FLOW_START: SpecializedStateMachine.ExecuteTask for agent {AgentId}, task: '{Task}'", 
+            state.AgentId, task.Length > 100 ? task.Substring(0, 100) + "..." : task);
 
         if (kernel == null)
         {
             var error = new InvalidOperationException("Kernel is not configured for specialized execution");
+            
+            // ❌ FLOW_ERROR: Kernel not configured
+            _logger.LogError("❌ FLOW_ERROR: Kernel is not configured for specialized execution - AgentId: {AgentId}", state.AgentId);
+            
             AgentTracingService.SetError(specializedExecutionActivity, error);
             throw error;
         }
+
+        // 🔄 FLOW_STEP: Validate kernel configuration
+        var availableTools = kernel.Plugins.SelectMany(p => p.Select(f => $"{p.Name}.{f.Name}")).ToList();
+        _logger.LogInformation("🔄 FLOW_STEP: Kernel validation - AgentId: {AgentId}, Available tools: {ToolCount} ({Tools})", 
+            state.AgentId, availableTools.Count, string.Join(", ", availableTools.Take(3)));
 
         try
         {
@@ -65,10 +75,18 @@ public class SpecializedStateMachine : IAgentStateMachine
             directExecutionActivity?.SetTag("direct_execution.pattern", "ToolCalling");
             directExecutionActivity?.SetTag("direct_execution.kernel_plugins", kernel.Plugins.Count);
             
+            // 🔄 FLOW_STEP: Starting direct tool execution
+            _logger.LogInformation("🔄 FLOW_STEP: Starting direct tool execution - AgentId: {AgentId}, Pattern: SyncDirect", state.AgentId);
+            
             var result = await ExecuteWithDirectTools(task, kernel, state, config);
             
             directExecutionActivity?.SetTag("direct_execution.result_length", result.Length);
             directExecutionActivity?.SetTag("direct_execution.success", true);
+            
+            // ✅ FLOW_SUCCESS: Direct tool execution completed
+            _logger.LogInformation("✅ FLOW_SUCCESS: Direct tool execution completed - AgentId: {AgentId}, Result length: {Length}", 
+                state.AgentId, result.Length);
+            
             AgentTracingService.SetSuccess(directExecutionActivity, "Direct tool execution completed successfully");
             
             // Phase 2: Send completion callback to parent if exists
@@ -79,26 +97,45 @@ public class SpecializedStateMachine : IAgentStateMachine
                 callbackSendActivity?.SetTag("completion_callback.success", true);
                 callbackSendActivity?.SetTag("completion_callback.result_length", result.Length);
                 
+                // 🔄 FLOW_STEP: Sending completion callback to parent
+                _logger.LogInformation("🔄 FLOW_STEP: Sending completion callback to parent {ParentId} - AgentId: {AgentId}", 
+                    state.ParentAgentId, state.AgentId);
+                
                 await SendCompletionCallback(state.ParentAgentId, result, true);
+                
+                // ✅ FLOW_SUCCESS: Callback sent successfully
+                _logger.LogInformation("✅ FLOW_SUCCESS: Completion callback sent to parent {ParentId} - AgentId: {AgentId}", 
+                    state.ParentAgentId, state.AgentId);
                 
                 AgentTracingService.SetSuccess(callbackSendActivity, $"Success callback sent to parent {state.ParentAgentId}");
             }
             else
             {
                 specializedExecutionActivity?.SetTag("specialized.parent_callback", "not_needed_no_parent");
+                
+                // 🔄 FLOW_STEP: No parent callback needed
+                _logger.LogInformation("🔄 FLOW_STEP: No parent callback needed (no parent agent) - AgentId: {AgentId}", state.AgentId);
             }
             
-            _logger.LogInformation("SpecializedStateMachine completed task for agent {AgentId}", state.AgentId);
-            
+            // ✅ FLOW_SUCCESS: Specialized execution completed
+            _logger.LogInformation("✅ FLOW_SUCCESS: SpecializedStateMachine execution completed - AgentId: {AgentId}, Result: {Length} chars", 
+                state.AgentId, result.Length);
+
             specializedExecutionActivity?.SetTag("specialized.result_length", result.Length);
             specializedExecutionActivity?.SetTag("specialized.completion_callback_sent", !string.IsNullOrEmpty(state.ParentAgentId));
+            
+            // 🏁 FLOW_END: Specialized state machine execution flow complete
+            _logger.LogInformation("🏁 FLOW_END: SpecializedStateMachine.ExecuteTask - SUCCESS for agent {AgentId}", state.AgentId);
+            
             AgentTracingService.SetSuccess(specializedExecutionActivity, $"Specialized execution completed: {result.Length} chars result");
             
             return result;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "SpecializedStateMachine execution failed for agent {AgentId}", state.AgentId);
+            // ❌ FLOW_ERROR: Specialized execution failed
+            _logger.LogError(ex, "❌ FLOW_ERROR: SpecializedStateMachine execution failed for agent {AgentId}: {Error}", 
+                state.AgentId, ex.Message);
             
             // Send failure callback to parent if exists
             if (!string.IsNullOrEmpty(state.ParentAgentId))
@@ -107,11 +144,18 @@ public class SpecializedStateMachine : IAgentStateMachine
                 failureCallbackActivity?.SetTag("failure_callback.parent_id", state.ParentAgentId);
                 failureCallbackActivity?.SetTag("failure_callback.error", ex.Message);
                 
+                // 🔄 FLOW_STEP: Sending failure callback to parent
+                _logger.LogInformation("🔄 FLOW_STEP: Sending failure callback to parent {ParentId} - AgentId: {AgentId}, Error: {Error}", 
+                    state.ParentAgentId, state.AgentId, ex.Message);
+                
                 var errorMessage = $"Specialized task failed: {ex.Message}";
                 await SendCompletionCallback(state.ParentAgentId, errorMessage, false);
                 
                 AgentTracingService.SetSuccess(failureCallbackActivity, "Failure callback sent to parent");
             }
+            
+            // 🏁 FLOW_END: Specialized state machine execution flow complete with error
+            _logger.LogInformation("🏁 FLOW_END: SpecializedStateMachine.ExecuteTask - FAILED for agent {AgentId}", state.AgentId);
             
             AgentTracingService.SetError(specializedExecutionActivity, ex);
             throw;

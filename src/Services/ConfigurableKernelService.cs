@@ -221,12 +221,17 @@ public class ConfigurableKernelService : IConfigurableKernelService
         kernelExecutionActivity?.SetTag("kernel_execution.wait_for_completion", waitForCompletion);
         kernelExecutionActivity?.SetTag("kernel_execution.system_prompt_length", systemPrompt.Length);
         
+        // 🟢 FLOW_START: Kernel service task execution flow
+        _logger.LogInformation("🟢 FLOW_START: ConfigurableKernelService.ExecuteTask - AgentId: {AgentId}, Task: '{Task}', WaitForCompletion: {WaitForCompletion}", 
+            state.AgentId, task.Length > 100 ? task.Substring(0, 100) + "..." : task, waitForCompletion);
+        
         try
         {
-            _logger.LogInformation("Executing task with configurable kernel: {Task} (waitForCompletion: {WaitForCompletion})", task, waitForCompletion);
-
             // Phase 1: Prepare chat service and history
             using var chatPreparationActivity = AgentTracingService.StartKernelActivity("PrepareChatServiceAndHistory", state.AgentId);
+            
+            // 🔄 FLOW_STEP: Preparing chat service and history
+            _logger.LogInformation("🔄 FLOW_STEP: Preparing chat service and history - AgentId: {AgentId}", state.AgentId);
             
             var chatService = kernel.GetRequiredService<IChatCompletionService>();
             var chatHistory = state.ToSemanticKernelChatHistory();
@@ -239,10 +244,17 @@ public class ConfigurableKernelService : IConfigurableKernelService
                 chatHistory.AddSystemMessage(systemPrompt);
                 state.AddChatMessage("system", systemPrompt);
                 chatPreparationActivity?.SetTag("chat_prep.system_message_added", true);
+                
+                // 🔄 FLOW_STEP: Added system message for fresh conversation
+                _logger.LogInformation("🔄 FLOW_STEP: Added system message for fresh conversation - AgentId: {AgentId}", state.AgentId);
             }
             else
             {
                 chatPreparationActivity?.SetTag("chat_prep.system_message_added", false);
+                
+                // 🔄 FLOW_STEP: Using existing conversation history
+                _logger.LogInformation("🔄 FLOW_STEP: Using existing conversation history ({Count} messages) - AgentId: {AgentId}", 
+                    chatHistory.Count, state.AgentId);
             }
 
             // Add the user task
@@ -250,10 +262,18 @@ public class ConfigurableKernelService : IConfigurableKernelService
             state.AddChatMessage("user", task);
             
             chatPreparationActivity?.SetTag("chat_prep.final_history_count", chatHistory.Count);
+            
+            // ✅ FLOW_SUCCESS: Chat preparation completed
+            _logger.LogInformation("✅ FLOW_SUCCESS: Chat preparation completed - AgentId: {AgentId}, History count: {Count}", 
+                state.AgentId, chatHistory.Count);
+            
             AgentTracingService.SetSuccess(chatPreparationActivity, $"Chat prepared with {chatHistory.Count} messages");
 
             // Phase 2: Configure execution settings
             using var executionSettingsActivity = AgentTracingService.StartKernelActivity("ConfigureExecutionSettings", state.AgentId);
+            
+            // 🔄 FLOW_STEP: Configuring LLM execution settings
+            _logger.LogInformation("🔄 FLOW_STEP: Configuring LLM execution settings - AgentId: {AgentId}", state.AgentId);
             
             var executionSettings = new OpenAIPromptExecutionSettings
             {
@@ -266,12 +286,21 @@ public class ConfigurableKernelService : IConfigurableKernelService
             executionSettingsActivity?.SetTag("execution_settings.max_tokens", executionSettings.MaxTokens);
             executionSettingsActivity?.SetTag("execution_settings.temperature", executionSettings.Temperature);
             executionSettingsActivity?.SetTag("execution_settings.tool_call_behavior", "EnableKernelFunctions");
+            
+            // ✅ FLOW_SUCCESS: Execution settings configured
+            _logger.LogInformation("✅ FLOW_SUCCESS: Execution settings configured - AgentId: {AgentId}, MaxTokens: {MaxTokens}, Temperature: {Temperature}", 
+                state.AgentId, executionSettings.MaxTokens, executionSettings.Temperature);
+            
             AgentTracingService.SetSuccess(executionSettingsActivity, "Execution settings configured for LLM");
 
             // Phase 3: Get initial response from LLM
             using var initialLLMActivity = AgentTracingService.StartKernelActivity("InitialLLMCall", state.AgentId);
             initialLLMActivity?.SetTag("llm_call.type", "initial");
             initialLLMActivity?.SetTag("llm_call.history_count", chatHistory.Count);
+            
+            // 🔄 FLOW_STEP: Making initial LLM call
+            _logger.LogInformation("🔄 FLOW_STEP: Making initial LLM call - AgentId: {AgentId}, History count: {Count}", 
+                state.AgentId, chatHistory.Count);
             
             var result = await chatService.GetChatMessageContentAsync(
                 chatHistory,
@@ -281,6 +310,11 @@ public class ConfigurableKernelService : IConfigurableKernelService
             var hasFunctionCalls = FunctionCallContent.GetFunctionCalls(result).Any();
             initialLLMActivity?.SetTag("llm_call.has_function_calls", hasFunctionCalls);
             initialLLMActivity?.SetTag("llm_call.response_length", result.Content?.Length ?? 0);
+            
+            // ✅ FLOW_SUCCESS: Initial LLM response received
+            _logger.LogInformation("✅ FLOW_SUCCESS: Initial LLM response received - AgentId: {AgentId}, Response length: {Length}, Function calls: {HasCalls}", 
+                state.AgentId, result.Content?.Length ?? 0, hasFunctionCalls);
+            
             AgentTracingService.SetSuccess(initialLLMActivity, $"Initial LLM response received: {result.Content?.Length ?? 0} chars, {(hasFunctionCalls ? "with" : "no")} function calls");
 
             // Phase 4: Process function calls if manual processor is available
@@ -289,6 +323,9 @@ public class ConfigurableKernelService : IConfigurableKernelService
                 // Start function call processing loop
                 using var functionCallLoopActivity = AgentTracingService.StartKernelActivity("FunctionCallProcessingLoop", state.AgentId);
                 functionCallLoopActivity?.SetTag("function_loop.max_iterations", 10);
+                
+                // 🔄 FLOW_STEP: Starting function call processing loop
+                _logger.LogInformation("🔄 FLOW_STEP: Starting function call processing loop - AgentId: {AgentId}, Max iterations: 10", state.AgentId);
                 
                 const int maxIterations = 10; // Prevent infinite loops
                 int iteration = 0;
@@ -301,6 +338,10 @@ public class ConfigurableKernelService : IConfigurableKernelService
                     using var iterationActivity = AgentTracingService.StartKernelActivity($"FunctionCallIteration_{iteration}", state.AgentId);
                     iterationActivity?.SetTag("iteration.number", iteration);
                     iterationActivity?.SetTag("iteration.has_function_calls", FunctionCallContent.GetFunctionCalls(result).Any());
+                    
+                    // 🔄 FLOW_STEP: Processing function calls iteration
+                    _logger.LogInformation("🔄 FLOW_STEP: Processing function calls iteration {Iteration} - AgentId: {AgentId}, Has function calls: {HasCalls}", 
+                        iteration, state.AgentId, FunctionCallContent.GetFunctionCalls(result).Any());
                     
                     var functionCallResult = await _manualFunctionCallProcessor.ProcessFunctionCallsAsync(
                         result,
@@ -315,7 +356,10 @@ public class ConfigurableKernelService : IConfigurableKernelService
                     if (!functionCallResult.Success)
                     {
                         var errorMessage = $"Function call processing failed: {string.Join(", ", functionCallResult.ErrorMessages)}";
-                        _logger.LogError(errorMessage);
+                        
+                        // ❌ FLOW_ERROR: Function call processing failed
+                        _logger.LogError("❌ FLOW_ERROR: Function call processing failed - AgentId: {AgentId}, Iteration: {Iteration}, Error: {Error}", 
+                            state.AgentId, iteration, errorMessage);
                         
                         iterationActivity?.SetTag("iteration.result", "processing_failed");
                         AgentTracingService.SetSuccess(iterationActivity, $"Iteration {iteration} failed: function call processing error");
@@ -328,8 +372,9 @@ public class ConfigurableKernelService : IConfigurableKernelService
                     // If there were pending agent calls, inform the user
                     if (functionCallResult.PendingAgentCalls.Any())
                     {
-                        _logger.LogInformation("Initiated {Count} non-blocking agent calls", 
-                            functionCallResult.PendingAgentCalls.Count);
+                        // 🔄 FLOW_STEP: Non-blocking agent calls initiated
+                        _logger.LogInformation("🔄 FLOW_STEP: Initiated {Count} non-blocking agent calls - AgentId: {AgentId}, Iteration: {Iteration}", 
+                            functionCallResult.PendingAgentCalls.Count, state.AgentId, iteration);
                     }
 
                     // Phase 4.2: Check if we should pause LLM execution for pending agent calls
@@ -339,6 +384,10 @@ public class ConfigurableKernelService : IConfigurableKernelService
                         using var pauseHandlingActivity = AgentTracingService.StartKernelActivity("HandleExecutionPause", state.AgentId);
                         pauseHandlingActivity?.SetTag("pause.pending_calls", functionCallResult.PendingCallsRequiringWait);
                         pauseHandlingActivity?.SetTag("pause.wait_for_completion", waitForCompletion);
+                        
+                        // 🔀 FLOW_DECISION: Should pause LLM execution for pending agent calls
+                        _logger.LogInformation("🔀 FLOW_DECISION: Pause LLM execution required - AgentId: {AgentId}, Pending calls: {PendingCalls}, WaitForCompletion: {WaitForCompletion}", 
+                            state.AgentId, functionCallResult.PendingCallsRequiringWait, waitForCompletion);
                         
                         if (!waitForCompletion)
                         {
@@ -362,6 +411,14 @@ public class ConfigurableKernelService : IConfigurableKernelService
                             
                             kernelExecutionActivity?.SetTag("kernel_execution.result", "paused");
                             kernelExecutionActivity?.SetTag("kernel_execution.iterations", iteration);
+                            
+                            // ⏸️ FLOW_PAUSE: Execution paused for pending agent callbacks
+                            _logger.LogInformation("⏸️ FLOW_PAUSE: LLM execution paused - AgentId: {AgentId}, Pending calls: {PendingCalls}, Message: '{Message}'", 
+                                state.AgentId, functionCallResult.PendingCallsRequiringWait, pauseMessage);
+                            
+                            // 🏁 FLOW_END: Early exit due to pause
+                            _logger.LogInformation("🏁 FLOW_END: ConfigurableKernelService.ExecuteTask - PAUSED for agent {AgentId}", state.AgentId);
+                            
                             AgentTracingService.SetSuccess(kernelExecutionActivity, pauseMessage);
                             
                             return pauseMessage;
@@ -369,6 +426,10 @@ public class ConfigurableKernelService : IConfigurableKernelService
                         else
                         {
                             pauseHandlingActivity?.SetTag("pause.action", "wait_for_completion");
+                            
+                            // 🔄 FLOW_STEP: Wait for completion mode - continuing execution
+                            _logger.LogInformation("🔄 FLOW_STEP: Wait for completion mode - continuing execution - AgentId: {AgentId}", state.AgentId);
+                            
                             AgentTracingService.SetSuccess(pauseHandlingActivity, "Waiting for completion mode - continuing execution");
                         }
                         
@@ -382,6 +443,11 @@ public class ConfigurableKernelService : IConfigurableKernelService
                     if (!functionCallResult.ChatHistoryUpdated && !string.IsNullOrEmpty(result.Content))
                     {
                         iterationActivity?.SetTag("iteration.result", "completed_with_content");
+                        
+                        // ✅ FLOW_SUCCESS: Iteration completed with final content
+                        _logger.LogInformation("✅ FLOW_SUCCESS: Iteration {Iteration} completed with final content - AgentId: {AgentId}, Content length: {Length}", 
+                            iteration, state.AgentId, result.Content.Length);
+                        
                         AgentTracingService.SetSuccess(iterationActivity, $"Iteration {iteration} completed with final content");
                         break;
                     }
@@ -394,6 +460,10 @@ public class ConfigurableKernelService : IConfigurableKernelService
                         nextLLMActivity?.SetTag("llm_call.iteration", iteration);
                         nextLLMActivity?.SetTag("llm_call.history_count", chatHistory.Count);
                         
+                        // 🔄 FLOW_STEP: Making continuation LLM call after function execution
+                        _logger.LogInformation("🔄 FLOW_STEP: Making continuation LLM call after function execution - AgentId: {AgentId}, Iteration: {Iteration}, History count: {Count}", 
+                            state.AgentId, iteration, chatHistory.Count);
+                        
                         var nextResult = await chatService.GetChatMessageContentAsync(
                             chatHistory,
                             executionSettings,
@@ -404,23 +474,43 @@ public class ConfigurableKernelService : IConfigurableKernelService
                         var nextHasFunctionCalls = FunctionCallContent.GetFunctionCalls(result).Any();
                         nextLLMActivity?.SetTag("llm_call.has_function_calls", nextHasFunctionCalls);
                         nextLLMActivity?.SetTag("llm_call.response_length", result.Content?.Length ?? 0);
+                        
+                        // ✅ FLOW_SUCCESS: Continuation LLM response received
+                        _logger.LogInformation("✅ FLOW_SUCCESS: Continuation LLM response received - AgentId: {AgentId}, Iteration: {Iteration}, Response length: {Length}, Function calls: {HasCalls}", 
+                            state.AgentId, iteration, result.Content?.Length ?? 0, nextHasFunctionCalls);
+                        
                         AgentTracingService.SetSuccess(nextLLMActivity, $"Continuation LLM response: {result.Content?.Length ?? 0} chars, {(nextHasFunctionCalls ? "with" : "no")} function calls");
                         
                         // If this result has content and no function calls, we're done
                         if (!string.IsNullOrEmpty(result.Content) && !nextHasFunctionCalls)
                         {
                             iterationActivity?.SetTag("iteration.result", "completed_final");
+                            
+                            // ✅ FLOW_SUCCESS: Final response received - iteration complete
+                            _logger.LogInformation("✅ FLOW_SUCCESS: Final response received - iteration {Iteration} complete - AgentId: {AgentId}", 
+                                iteration, state.AgentId);
+                            
                             AgentTracingService.SetSuccess(iterationActivity, $"Iteration {iteration} completed - final response received");
                             break;
                         }
                         
                         iterationActivity?.SetTag("iteration.result", "continued");
+                        
+                        // 🔄 FLOW_STEP: More function calls to process - continuing
+                        _logger.LogInformation("🔄 FLOW_STEP: More function calls to process - continuing iteration {Iteration} - AgentId: {AgentId}", 
+                            iteration, state.AgentId);
+                        
                         AgentTracingService.SetSuccess(iterationActivity, $"Iteration {iteration} continued - more function calls to process");
                     }
                     else
                     {
                         // No chat history update means no function calls were processed
                         iterationActivity?.SetTag("iteration.result", "no_updates");
+                        
+                        // 🔄 FLOW_STEP: No function calls processed - ending iteration
+                        _logger.LogInformation("🔄 FLOW_STEP: No function calls processed - ending iteration {Iteration} - AgentId: {AgentId}", 
+                            iteration, state.AgentId);
+                        
                         AgentTracingService.SetSuccess(iterationActivity, $"Iteration {iteration} - no function calls processed");
                         break;
                     }
@@ -429,12 +519,19 @@ public class ConfigurableKernelService : IConfigurableKernelService
                 functionCallLoopActivity?.SetTag("function_loop.iterations_completed", iteration);
                 if (iteration >= maxIterations)
                 {
-                    _logger.LogWarning("Reached maximum function call iterations ({MaxIterations}) for task execution", maxIterations);
+                    // ⚠️ FLOW_WARNING: Reached maximum iterations
+                    _logger.LogWarning("⚠️ FLOW_WARNING: Reached maximum function call iterations ({MaxIterations}) for task execution - AgentId: {AgentId}", 
+                        maxIterations, state.AgentId);
+                    
                     functionCallLoopActivity?.SetTag("function_loop.result", "max_iterations_reached");
                     AgentTracingService.SetSuccess(functionCallLoopActivity, $"Function call loop completed: reached max iterations ({maxIterations})");
                 }
                 else
                 {
+                    // ✅ FLOW_SUCCESS: Function call loop completed naturally
+                    _logger.LogInformation("✅ FLOW_SUCCESS: Function call loop completed naturally after {Iterations} iterations - AgentId: {AgentId}", 
+                        iteration, state.AgentId);
+                    
                     functionCallLoopActivity?.SetTag("function_loop.result", "completed_naturally");
                     AgentTracingService.SetSuccess(functionCallLoopActivity, $"Function call loop completed naturally after {iteration} iterations");
                 }
@@ -443,13 +540,18 @@ public class ConfigurableKernelService : IConfigurableKernelService
             {
                 // Fallback to adding the result directly if no manual processor
                 chatHistory.Add(result);
-                _logger.LogWarning("Manual function call processor not available, using basic processing");
+                
+                // ⚠️ FLOW_WARNING: Manual function call processor not available
+                _logger.LogWarning("⚠️ FLOW_WARNING: Manual function call processor not available, using basic processing - AgentId: {AgentId}", state.AgentId);
                 
                 kernelExecutionActivity?.SetTag("kernel_execution.fallback_processing", true);
             }
 
             // Phase 5: Finalize response
             using var responseFinalizationActivity = AgentTracingService.StartKernelActivity("FinalizeResponse", state.AgentId);
+            
+            // 🔄 FLOW_STEP: Finalizing response and updating state
+            _logger.LogInformation("🔄 FLOW_STEP: Finalizing response and updating state - AgentId: {AgentId}", state.AgentId);
             
             var response = result.Content ?? "No response generated.";
 
@@ -463,19 +565,35 @@ public class ConfigurableKernelService : IConfigurableKernelService
             
             responseFinalizationActivity?.SetTag("response.length", response.Length);
             responseFinalizationActivity?.SetTag("response.working_memory_updated", true);
+            
+            // ✅ FLOW_SUCCESS: Response finalization completed
+            _logger.LogInformation("✅ FLOW_SUCCESS: Response finalization completed - AgentId: {AgentId}, Response length: {Length}", 
+                state.AgentId, response.Length);
+            
             AgentTracingService.SetSuccess(responseFinalizationActivity, $"Response finalized: {response.Length} chars");
 
-            _logger.LogInformation("Task execution completed successfully");
+            // ✅ FLOW_SUCCESS: Task execution completed successfully
+            _logger.LogInformation("✅ FLOW_SUCCESS: Task execution completed successfully - AgentId: {AgentId}, Final response length: {Length}", 
+                state.AgentId, response.Length);
             
             kernelExecutionActivity?.SetTag("kernel_execution.result", "success");
             kernelExecutionActivity?.SetTag("kernel_execution.response_length", response.Length);
+            
+            // 🏁 FLOW_END: Kernel service task execution flow complete
+            _logger.LogInformation("🏁 FLOW_END: ConfigurableKernelService.ExecuteTask - SUCCESS for agent {AgentId}", state.AgentId);
+            
             AgentTracingService.SetSuccess(kernelExecutionActivity, $"Task execution completed: {response.Length} chars response");
             
             return response;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error executing task with configurable kernel");
+            // ❌ FLOW_ERROR: Task execution failed
+            _logger.LogError(ex, "❌ FLOW_ERROR: ConfigurableKernelService.ExecuteTask failed for agent {AgentId}: {Error}", 
+                state.AgentId, ex.Message);
+            
+            // 🏁 FLOW_END: Kernel service task execution flow complete with error
+            _logger.LogInformation("🏁 FLOW_END: ConfigurableKernelService.ExecuteTask - FAILED for agent {AgentId}", state.AgentId);
             
             kernelExecutionActivity?.SetTag("kernel_execution.result", "error");
             AgentTracingService.SetError(kernelExecutionActivity, ex);
