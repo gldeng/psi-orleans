@@ -302,14 +302,30 @@ public class ConfigurableKernelService : IConfigurableKernelService
             _logger.LogInformation("🔄 FLOW_STEP: Making initial LLM call - AgentId: {AgentId}, History count: {Count}", 
                 state.AgentId, chatHistory.Count);
             
+            // 📊 TASK_INFO: Log detailed LLM request information
+            _logger.LogInformation("📊 TASK_INFO: LLM Request Details - Agent: {AgentId}, Task: '{Task}', System Prompt Length: {SystemPromptLength}, Max Tokens: {MaxTokens}, Temperature: {Temperature}, Available Functions: {FunctionCount}", 
+                state.AgentId, task.Length > 200 ? task.Substring(0, 200) + "..." : task, systemPrompt.Length, executionSettings.MaxTokens, executionSettings.Temperature, kernel.Plugins.SelectMany(p => p).Count());
+            
+            var llmStartTime = DateTime.UtcNow;
             var result = await chatService.GetChatMessageContentAsync(
                 chatHistory,
                 executionSettings,
                 kernel);
+            var llmDuration = DateTime.UtcNow - llmStartTime;
             
             var hasFunctionCalls = FunctionCallContent.GetFunctionCalls(result).Any();
+            var functionCallsInfo = FunctionCallContent.GetFunctionCalls(result)
+                .Select(fc => $"{fc.PluginName}.{fc.FunctionName}")
+                .ToList();
+            
             initialLLMActivity?.SetTag("llm_call.has_function_calls", hasFunctionCalls);
             initialLLMActivity?.SetTag("llm_call.response_length", result.Content?.Length ?? 0);
+            
+            // 📊 TASK_INFO: Log detailed LLM response information
+            _logger.LogInformation("📊 TASK_INFO: LLM Response Details - Agent: {AgentId}, Duration: {Duration}ms, Response Length: {Length}, Function Calls: {FunctionCalls}, Content Preview: '{Content}'", 
+                state.AgentId, llmDuration.TotalMilliseconds, result.Content?.Length ?? 0, 
+                hasFunctionCalls ? string.Join(", ", functionCallsInfo) : "None", 
+                result.Content?.Length > 150 ? result.Content.Substring(0, 150) + "..." : result.Content ?? "null");
             
             // ✅ FLOW_SUCCESS: Initial LLM response received
             _logger.LogInformation("✅ FLOW_SUCCESS: Initial LLM response received - AgentId: {AgentId}, Response length: {Length}, Function calls: {HasCalls}", 

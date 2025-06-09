@@ -42,6 +42,11 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
         
         var result = new ManualFunctionCallResult();
         
+        // 📊 TASK_INFO: Log detailed function call processing start
+        _logger.LogInformation("📊 TASK_INFO: Function Call Processing Start - Agent: {AgentId}, Chat Result Length: {Length}, Content Preview: '{Content}'", 
+            agentId, chatResult.Content?.Length ?? 0, 
+            chatResult.Content?.Length > 200 ? chatResult.Content.Substring(0, 200) + "..." : chatResult.Content ?? "null");
+        
         try
         {
             // Add the AI response to chat history first
@@ -52,9 +57,30 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
             
             functionCallProcessingActivity?.SetTag("function_call.total_calls", functionCalls.Length);
             
+            // 📊 TASK_INFO: Log function call details
+            if (functionCalls.Length > 0)
+            {
+                var functionCallDetails = functionCalls.Select(fc => new
+                {
+                    Function = fc.FunctionName,
+                    Plugin = fc.PluginName ?? "none",
+                    Id = fc.Id ?? "none",
+                    Arguments = fc.Arguments?.Select(kv => $"{kv.Key}={kv.Value}").ToList() ?? new List<string>()
+                }).ToList();
+
+                _logger.LogInformation("📊 TASK_INFO: Function Calls Detected - Agent: {AgentId}, Count: {Count}, Calls: {Calls}", 
+                    agentId, functionCalls.Length, 
+                    string.Join("; ", functionCallDetails.Select(fc => $"{fc.Plugin}.{fc.Function}({string.Join(", ", fc.Arguments.Take(2))})")));
+            }
+            
             if (functionCalls.Length == 0)
             {
                 _logger.LogDebug("No function calls found in chat result");
+                
+                // 📊 TASK_INFO: Log no function calls detected
+                _logger.LogInformation("📊 TASK_INFO: No Function Calls - Agent: {AgentId}, Chat Result Content Available: {HasContent}", 
+                    agentId, !string.IsNullOrEmpty(chatResult.Content));
+                
                 AgentTracingService.SetSuccess(functionCallProcessingActivity, "No function calls to process");
                 return result;
             }
@@ -71,11 +97,22 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
             functionCallProcessingActivity?.SetTag("function_call.agent_call_names", string.Join(", ", agentCalls.Select(fc => fc.FunctionName).Take(3)));
             functionCallProcessingActivity?.SetTag("function_call.regular_call_names", string.Join(", ", regularCalls.Select(fc => fc.FunctionName).Take(3)));
 
+            // 📊 TASK_INFO: Log function call categorization
+            _logger.LogInformation("📊 TASK_INFO: Function Call Categorization - Agent: {AgentId}, Agent Calls: {AgentCalls} ({AgentCallNames}), Regular Calls: {RegularCalls} ({RegularCallNames})", 
+                agentId, agentCalls.Length, string.Join(", ", agentCalls.Select(fc => fc.FunctionName)), 
+                regularCalls.Length, string.Join(", ", regularCalls.Select(fc => fc.FunctionName)));
+
             // Process each function call
             foreach (var functionCall in functionCalls)
             {
                 try
                 {
+                    // 📊 TASK_INFO: Log individual function call processing
+                    _logger.LogInformation("📊 TASK_INFO: Processing Function Call - Agent: {AgentId}, Function: {Function}, Plugin: {Plugin}, Arguments: {Arguments}", 
+                        agentId, functionCall.FunctionName, functionCall.PluginName ?? "none", 
+                        functionCall.Arguments?.Count > 0 ? string.Join(", ", functionCall.Arguments.Select(kv => $"{kv.Key}={kv.Value}").Take(3)) : "none");
+
+                    var callStartTime = DateTime.UtcNow;
                     await ProcessSingleFunctionCallAsync(
                         functionCall, 
                         kernel, 
@@ -83,6 +120,11 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
                         chatHistory, 
                         result, 
                         cancellationToken);
+                    var callDuration = DateTime.UtcNow - callStartTime;
+
+                    // 📊 TASK_INFO: Log function call completion
+                    _logger.LogInformation("📊 TASK_INFO: Function Call Completed - Agent: {AgentId}, Function: {Function}, Duration: {Duration}ms, Success: True", 
+                        agentId, functionCall.FunctionName, callDuration.TotalMilliseconds);
                 }
                 catch (Exception ex)
                 {
@@ -92,12 +134,21 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
                     var errorMessage = $"Error processing function {functionCall.FunctionName}: {ex.Message}";
                     result.ErrorMessages.Add(errorMessage);
                     
+                    // 📊 TASK_INFO: Log function call error
+                    _logger.LogError("📊 TASK_INFO: Function Call Error - Agent: {AgentId}, Function: {Function}, Error: {Error}, Exception Type: {ExceptionType}", 
+                        agentId, functionCall.FunctionName, ex.Message, ex.GetType().Name);
+                    
                     // Add error to chat history
                     AddErrorToChatHistory(chatHistory, functionCall, errorMessage);
                 }
             }
 
             result.ChatHistoryUpdated = true;
+            
+            // 📊 TASK_INFO: Log function call processing summary
+            _logger.LogInformation("📊 TASK_INFO: Function Call Processing Complete - Agent: {AgentId}, Total Calls: {Total}, Pending Agent Calls: {Pending}, Errors: {Errors}, Should Pause LLM: {ShouldPause}", 
+                agentId, functionCalls.Length, result.PendingAgentCalls.Count, result.ErrorMessages.Count, result.ShouldPauseLLMExecution);
+            
             _logger.LogInformation("Completed processing function calls for agent {AgentId}. " +
                 "Pending agent calls: {PendingCount}, Errors: {ErrorCount}", 
                 agentId, result.PendingAgentCalls.Count, result.ErrorMessages.Count);
@@ -112,6 +163,11 @@ public class ManualFunctionCallProcessor : IManualFunctionCallProcessor
         catch (Exception ex)
         {
             _logger.LogError(ex, "Critical error in ProcessFunctionCallsAsync for agent {AgentId}", agentId);
+            
+            // 📊 TASK_INFO: Log critical processing error
+            _logger.LogError("📊 TASK_INFO: Critical Function Call Processing Error - Agent: {AgentId}, Error: {Error}, Exception Type: {ExceptionType}, Stack Trace: {StackTrace}", 
+                agentId, ex.Message, ex.GetType().Name, ex.StackTrace);
+            
             result.Success = false;
             result.ErrorMessages.Add($"Critical processing error: {ex.Message}");
             

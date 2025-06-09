@@ -900,20 +900,20 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
             
             // 🔀 FLOW_DECISION: Role determined - log the decision
             _logger.LogInformation("🔀 FLOW_DECISION: Agent {AgentId} role determined as {Role} for task analysis", 
-                _state.AgentId, _state.DeterminedRole);
+                _state.AgentId, _state.Role);
 
             // 🔄 FLOW_STEP: Configure agent for determined role  
             _logger.LogInformation("🔄 FLOW_STEP: Configuring agent {AgentId} for role {Role}", 
-                _state.AgentId, _state.DeterminedRole);
+                _state.AgentId, _state.Role);
             
             await ConfigureAgentForRoleAsync();
             
             // 🔀 FLOW_DECISION: Execute based on agent role
             _logger.LogInformation("🔀 FLOW_DECISION: Executing task with {Role} pattern for agent {AgentId}", 
-                _state.DeterminedRole, _state.AgentId);
+                _state.Role, _state.AgentId);
 
             string result;
-            if (_state.DeterminedRole == AgentRole.Orchestrator)
+            if (_state.Role == AgentRole.Orchestrator)
             {
                 // 🔄 FLOW_STEP: Execute as orchestrator using OrchestratorStateMachine
                 _logger.LogInformation("🔄 FLOW_STEP: Executing as Orchestrator agent for agent {AgentId} using OrchestratorStateMachine", _state.AgentId);
@@ -932,7 +932,7 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
 
             // ✅ FLOW_SUCCESS: Task completed successfully
             _logger.LogInformation("✅ FLOW_SUCCESS: ProcessTaskAsync completed for agent {AgentId} in {Duration}ms, role: {Role}, result length: {ResultLength}", 
-                _state.AgentId, executionTime.TotalMilliseconds, _state.DeterminedRole, result.Length);
+                _state.AgentId, executionTime.TotalMilliseconds, _state.Role, result.Length);
 
             // 🏁 FLOW_END: Main task processing flow complete
             _logger.LogInformation("🏁 FLOW_END: ProcessTaskAsync for agent {AgentId} - SUCCESS", _state.AgentId);
@@ -964,6 +964,10 @@ public class ConfigurableAgentGrain : Grain, IConfigurableAgentGrain
     {
         // 🟢 FLOW_START: Task analysis flow
         _logger.LogInformation("🟢 FLOW_START: AnalyzeTaskAndDetermineRole for agent {AgentId}", _state.AgentId);
+        
+        // 📊 TASK_INFO: Log detailed task information for troubleshooting
+        _logger.LogInformation("📊 TASK_INFO: Task Analysis Starting - Agent: {AgentId}, Task Length: {Length}, Task Content: '{Task}'", 
+            _state.AgentId, task.Length, task);
 
         try
         {
@@ -994,24 +998,43 @@ SPECIALIZED agents should handle tasks that:
 
 Respond with exactly one word: ORCHESTRATOR or SPECIALIZED";
 
+            // 📊 TASK_INFO: Log the analysis prompt being sent to LLM
+            _logger.LogInformation("📊 TASK_INFO: LLM Analysis Prompt - Agent: {AgentId}, Prompt Length: {Length}, Prompt: '{Prompt}'", 
+                _state.AgentId, analysisPrompt.Length, analysisPrompt);
+
             // 🔄 FLOW_STEP: Execute LLM analysis
             _logger.LogInformation("🔄 FLOW_STEP: Executing LLM task complexity analysis");
             
+            var startTime = DateTime.UtcNow;
             var result = await chatService.GetChatMessageContentAsync(analysisPrompt);
+            var analysisTime = DateTime.UtcNow - startTime;
+            
             var response = result.Content?.Trim().ToUpperInvariant() ?? "SPECIALIZED";
+
+            // 📊 TASK_INFO: Log detailed LLM response and analysis
+            _logger.LogInformation("📊 TASK_INFO: LLM Analysis Response - Agent: {AgentId}, Duration: {Duration}ms, Raw Response: '{RawResponse}', Parsed Response: '{ParsedResponse}'", 
+                _state.AgentId, analysisTime.TotalMilliseconds, result.Content?.Trim() ?? "null", response);
 
             // 🔀 FLOW_DECISION: Parse LLM response and determine role
             _logger.LogInformation("🔀 FLOW_DECISION: LLM analysis response: '{Response}'", response);
             
-            _state.DeterminedRole = response.Contains("ORCHESTRATOR") ? AgentRole.Orchestrator : AgentRole.Specialized;
+            _state.Role = response.Contains("ORCHESTRATOR") ? AgentRole.Orchestrator : AgentRole.Specialized;
+
+            // 📊 TASK_INFO: Log role determination rationale
+            var roleRationale = response.Contains("ORCHESTRATOR") 
+                ? "Task requires orchestration capabilities (multi-step, delegation, coordination)"
+                : "Task can be handled directly with specialized tools";
+            
+            _logger.LogInformation("📊 TASK_INFO: Role Determination Complete - Agent: {AgentId}, Determined Role: {Role}, Rationale: {Rationale}, Task Complexity Score: {Complexity}", 
+                _state.AgentId, _state.Role, roleRationale, response.Contains("ORCHESTRATOR") ? "High" : "Low");
 
             // ✅ FLOW_SUCCESS: Role determination completed
             _logger.LogInformation("✅ FLOW_SUCCESS: Agent {AgentId} determined to be {Role} for task analysis", 
-                _state.AgentId, _state.DeterminedRole);
+                _state.AgentId, _state.Role);
                 
             // 🏁 FLOW_END: Task analysis flow complete
             _logger.LogInformation("🏁 FLOW_END: AnalyzeTaskAndDetermineRole for agent {AgentId} - Role: {Role}", 
-                _state.AgentId, _state.DeterminedRole);
+                _state.AgentId, _state.Role);
         }
         catch (Exception ex)
         {
@@ -1019,7 +1042,11 @@ Respond with exactly one word: ORCHESTRATOR or SPECIALIZED";
             _logger.LogError(ex, "❌ FLOW_ERROR: Task analysis failed for agent {AgentId}, defaulting to SPECIALIZED: {Error}", 
                 _state.AgentId, ex.Message);
             
-            _state.DeterminedRole = AgentRole.Specialized;
+            // 📊 TASK_INFO: Log detailed error context with task information
+            _logger.LogError("📊 TASK_INFO: Task Analysis Error Context - Agent: {AgentId}, Task: '{Task}', Task Length: {Length}, Error Type: {ErrorType}, Stack Trace: {StackTrace}", 
+                _state.AgentId, task, task.Length, ex.GetType().Name, ex.StackTrace);
+            
+            _state.Role = AgentRole.Specialized;
             
             // 🏁 FLOW_END: Task analysis flow complete with fallback
             _logger.LogInformation("🏁 FLOW_END: AnalyzeTaskAndDetermineRole for agent {AgentId} - FALLBACK to Specialized", _state.AgentId);
@@ -1033,26 +1060,26 @@ Respond with exactly one word: ORCHESTRATOR or SPECIALIZED";
     {
         // 🟢 FLOW_START: Role configuration flow
         _logger.LogInformation("🟢 FLOW_START: ConfigureAgentForRole - Role: {Role}, Agent: {AgentId}", 
-            _state.DeterminedRole, _state.AgentId);
+            _state.Role, _state.AgentId);
 
         try
         {
             // 🔄 FLOW_STEP: Create role-specific configuration
-            _logger.LogInformation("🔄 FLOW_STEP: Creating role-specific configuration for {Role}", _state.DeterminedRole);
+            _logger.LogInformation("🔄 FLOW_STEP: Creating role-specific configuration for {Role}", _state.Role);
             
             var roleConfig = new AgentConfiguration
             {
-                AgentName = $"{_state.Configuration!.AgentName}_{_state.DeterminedRole}",
-                SystemPrompt = _roleConfigurator.GetSystemPromptForRole(_state.DeterminedRole, _state.Configuration.SystemPrompt),
+                AgentName = $"{_state.Configuration!.AgentName}_{_state.Role}",
+                SystemPrompt = _roleConfigurator.GetSystemPromptForRole(_state.Role, _state.Configuration.SystemPrompt),
                 Model = _state.Configuration.Model,
                 MaxTokens = _state.Configuration.MaxTokens,
                 Temperature = _state.Configuration.Temperature
             };
 
             // 🔄 FLOW_STEP: Configure kernel for role
-            _logger.LogInformation("🔄 FLOW_STEP: Configuring kernel for role {Role} using role configurator", _state.DeterminedRole);
+            _logger.LogInformation("🔄 FLOW_STEP: Configuring kernel for role {Role} using role configurator", _state.Role);
             
-            _kernel = await _roleConfigurator.ConfigureKernelAsync(_state.DeterminedRole, roleConfig, _state.OriginalToolNames);
+            _kernel = await _roleConfigurator.ConfigureKernelAsync(_state.Role, roleConfig, _state.OriginalToolNames);
 
             // 🔄 FLOW_STEP: Update state with role configuration
             _logger.LogInformation("🔄 FLOW_STEP: Updating agent state with role configuration");
@@ -1065,7 +1092,7 @@ Respond with exactly one word: ORCHESTRATOR or SPECIALIZED";
 
             // ✅ FLOW_SUCCESS: Role configuration completed
             _logger.LogInformation("✅ FLOW_SUCCESS: Agent {AgentId} configured for role {Role} using new role configurator", 
-                _state.AgentId, _state.DeterminedRole);
+                _state.AgentId, _state.Role);
                 
             // 🏁 FLOW_END: Role configuration flow complete
             _logger.LogInformation("🏁 FLOW_END: ConfigureAgentForRole for agent {AgentId} - Success", _state.AgentId);
@@ -1074,7 +1101,7 @@ Respond with exactly one word: ORCHESTRATOR or SPECIALIZED";
         {
             // ❌ FLOW_ERROR: Role configuration failed
             _logger.LogError(ex, "❌ FLOW_ERROR: Role configuration failed for agent {AgentId}, role {Role}: {Error}", 
-                _state.AgentId, _state.DeterminedRole, ex.Message);
+                _state.AgentId, _state.Role, ex.Message);
                 
             // 🏁 FLOW_END: Role configuration flow complete with error
             _logger.LogInformation("🏁 FLOW_END: ConfigureAgentForRole for agent {AgentId} - FAILED", _state.AgentId);
@@ -1102,7 +1129,7 @@ Respond with exactly one word: ORCHESTRATOR or SPECIALIZED";
             
             // Phase 1: Create State Machine
             using var stateMachineCreationActivity = AgentTracingService.StartAgentActivity("CreateOrchestratorStateMachine", _state.AgentId);
-            var stateMachine = _stateMachineFactory.CreateStateMachine(_state.DeterminedRole);
+            var stateMachine = _stateMachineFactory.CreateStateMachine(_state.Role);
             stateMachineCreationActivity?.SetTag("state_machine.type", "OrchestratorStateMachine");
             AgentTracingService.SetSuccess(stateMachineCreationActivity, "Orchestrator state machine created");
             
@@ -1162,7 +1189,7 @@ Respond with exactly one word: ORCHESTRATOR or SPECIALIZED";
             
             // Phase 1: Create State Machine
             using var stateMachineCreationActivity = AgentTracingService.StartAgentActivity("CreateSpecializedStateMachine", _state.AgentId);
-            var stateMachine = _stateMachineFactory.CreateStateMachine(_state.DeterminedRole);
+            var stateMachine = _stateMachineFactory.CreateStateMachine(_state.Role);
             stateMachineCreationActivity?.SetTag("state_machine.type", "SpecializedStateMachine");
             AgentTracingService.SetSuccess(stateMachineCreationActivity, "Specialized state machine created");
             
@@ -1264,9 +1291,9 @@ Respond with exactly one word: ORCHESTRATOR or SPECIALIZED";
 
     public async Task<(bool Success, string Message)> CreateAgentAsync(string agentId, AgentConfiguration configuration, IEnumerable<string>? toolNames = null)
     {
-        if (_state.DeterminedRole != AgentRole.Orchestrator)
+        if (_state.Role != AgentRole.Orchestrator)
         {
-            var errorMsg = $"Only Orchestrator agents can create child agents. Current role: {_state.DeterminedRole}";
+            var errorMsg = $"Only Orchestrator agents can create child agents. Current role: {_state.Role}";
             _logger.LogError(errorMsg);
             return (false, errorMsg);
         }
@@ -1306,9 +1333,9 @@ Respond with exactly one word: ORCHESTRATOR or SPECIALIZED";
         childCallActivity?.SetTag("communication.child_id", childAgentId);
         childCallActivity?.SetTag("communication.task_length", task.Length);
         
-        if (_state.DeterminedRole != AgentRole.Orchestrator)
+        if (_state.Role != AgentRole.Orchestrator)
         {
-            var error = new InvalidOperationException($"Only Orchestrator agents can call child agents. Current role: {_state.DeterminedRole}");
+            var error = new InvalidOperationException($"Only Orchestrator agents can call child agents. Current role: {_state.Role}");
             AgentTracingService.SetError(childCallActivity, error);
             throw error;
         }
@@ -1389,7 +1416,7 @@ Respond with exactly one word: ORCHESTRATOR or SPECIALIZED";
         {
             var stateInfo = new StringBuilder();
             stateInfo.AppendLine($"Agent ID: {_state.AgentId}");
-            stateInfo.AppendLine($"Role: {_state.DeterminedRole}");
+            stateInfo.AppendLine($"Role: {_state.Role}");
             stateInfo.AppendLine($"Current Task: {_state.CurrentTask}");
             stateInfo.AppendLine();
             

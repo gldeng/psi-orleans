@@ -193,11 +193,28 @@ public class SpecializedStateMachine : IAgentStateMachine
     {
         _logger.LogDebug("Executing task with automatic LLM tool calling for agent {AgentId}", state.AgentId);
         
+        // 📊 TASK_INFO: Log detailed tool execution start
+        _logger.LogInformation("📊 TASK_INFO: Direct Tool Execution Start - Agent: {AgentId}, Task: '{Task}', Available Tools: {ToolCount}", 
+            state.AgentId, task, kernel.Plugins.SelectMany(p => p).Count());
+        
         try
         {
             // Debug: Check available tools in kernel
             var availableTools = kernel.Plugins.SelectMany(p => p.Select(f => $"{p.Name}.{f.Name}")).ToList();
             _logger.LogInformation("SpecializedStateMachine available tools: {Tools}", string.Join(", ", availableTools));
+            
+            // 📊 TASK_INFO: Log available tools and their descriptions
+            var toolDetails = kernel.Plugins.SelectMany(p => 
+                p.Select(f => new 
+                { 
+                    Name = $"{p.Name}.{f.Name}", 
+                    Description = f.Description ?? "No description",
+                    ParameterCount = f.Metadata.Parameters.Count 
+                })).ToList();
+            
+            _logger.LogInformation("📊 TASK_INFO: Available Tool Details - Agent: {AgentId}, Tools: {Tools}", 
+                state.AgentId, 
+                string.Join("; ", toolDetails.Select(t => $"{t.Name}({t.ParameterCount} params): {(t.Description.Length > 50 ? t.Description.Substring(0, 50) + "..." : t.Description)}")));
             
             // Get chat completion service
             var chatService = kernel.GetRequiredService<IChatCompletionService>();
@@ -210,6 +227,10 @@ public class SpecializedStateMachine : IAgentStateMachine
                 Temperature = config.Temperature
             };
 
+            // 📊 TASK_INFO: Log execution settings
+            _logger.LogInformation("📊 TASK_INFO: LLM Execution Settings - Agent: {AgentId}, MaxTokens: {MaxTokens}, Temperature: {Temperature}, ToolCallBehavior: {ToolBehavior}", 
+                state.AgentId, executionSettings.MaxTokens, executionSettings.Temperature, "AutoInvokeKernelFunctions");
+
             // Create chat history starting with system prompt and user task
             var chatHistory = new ChatHistory();
             if (!string.IsNullOrEmpty(config.SystemPrompt))
@@ -220,6 +241,10 @@ public class SpecializedStateMachine : IAgentStateMachine
                 
                 chatHistory.AddSystemMessage(enhancedPrompt);
                 _logger.LogInformation("Added enhanced system prompt: {Prompt}", enhancedPrompt);
+                
+                // 📊 TASK_INFO: Log system prompt details
+                _logger.LogInformation("📊 TASK_INFO: System Prompt - Agent: {AgentId}, Original Length: {OriginalLength}, Enhanced Length: {EnhancedLength}, Enhancement: Tool usage enforcement", 
+                    state.AgentId, config.SystemPrompt.Length, enhancedPrompt.Length);
             }
             
             // Enhanced user message to force tool usage
@@ -229,24 +254,62 @@ public class SpecializedStateMachine : IAgentStateMachine
             chatHistory.AddUserMessage(enhancedTask);
             _logger.LogInformation("Added enhanced user message: {Task}", enhancedTask);
 
+            // 📊 TASK_INFO: Log user message enhancement
+            _logger.LogInformation("📊 TASK_INFO: User Message - Agent: {AgentId}, Original Task: '{OriginalTask}', Enhanced Task Length: {EnhancedLength}, Enhancement: Tool usage requirement", 
+                state.AgentId, task, enhancedTask.Length);
+
             _logger.LogInformation("Executing ChatCompletion with AutoInvokeKernelFunctions...");
+            
+            // 📊 TASK_INFO: Log LLM execution start
+            var executionStartTime = DateTime.UtcNow;
+            _logger.LogInformation("📊 TASK_INFO: LLM Execution Start - Agent: {AgentId}, Chat History Count: {HistoryCount}, Auto Tool Calling: Enabled", 
+                state.AgentId, chatHistory.Count);
             
             // Execute with automatic tool calling - LLM will call tools as needed
             var result = await chatService.GetChatMessageContentAsync(
                 chatHistory,
                 executionSettings, 
                 kernel);
-
+            
+            var executionDuration = DateTime.UtcNow - executionStartTime;
             var response = result.Content ?? "Task completed successfully.";
+            
+            // 📊 TASK_INFO: Log LLM execution result
+            _logger.LogInformation("📊 TASK_INFO: LLM Execution Complete - Agent: {AgentId}, Duration: {Duration}ms, Response Length: {Length}, Response Preview: '{Response}', Tool Calls Detected: {ToolCalls}", 
+                state.AgentId, executionDuration.TotalMilliseconds, response.Length, 
+                response.Length > 200 ? response.Substring(0, 200) + "..." : response,
+                FunctionCallContent.GetFunctionCalls(result).Any() ? "Yes" : "No");
+            
+            // 📊 TASK_INFO: Log tool usage analysis
+            var functionCalls = FunctionCallContent.GetFunctionCalls(result).ToList();
+            if (functionCalls.Any())
+            {
+                _logger.LogInformation("📊 TASK_INFO: Tool Usage Detected - Agent: {AgentId}, Tool Calls: {ToolCalls}", 
+                    state.AgentId, string.Join(", ", functionCalls.Select(fc => $"{fc.PluginName}.{fc.FunctionName}")));
+            }
+            else
+            {
+                _logger.LogInformation("📊 TASK_INFO: No Tool Usage - Agent: {AgentId}, Direct Response Generated", state.AgentId);
+            }
             
             _logger.LogInformation("Automatic LLM tool calling result: {Result}", response);
             _logger.LogDebug("Automatic LLM tool calling completed for agent {AgentId}", state.AgentId);
+            
+            // 📊 TASK_INFO: Log execution success summary
+            _logger.LogInformation("📊 TASK_INFO: Direct Tool Execution Success - Agent: {AgentId}, Total Duration: {Duration}ms, Final Response Length: {Length}, Tools Used: {ToolsUsed}", 
+                state.AgentId, executionDuration.TotalMilliseconds, response.Length, 
+                functionCalls.Any() ? functionCalls.Count.ToString() : "0");
             
             return response;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in automatic tool calling execution for agent {AgentId}", state.AgentId);
+            
+            // 📊 TASK_INFO: Log execution error details
+            _logger.LogError("📊 TASK_INFO: Direct Tool Execution Error - Agent: {AgentId}, Task: '{Task}', Error: {Error}, Exception Type: {ExceptionType}, Available Tools: {ToolCount}", 
+                state.AgentId, task, ex.Message, ex.GetType().Name, kernel.Plugins.SelectMany(p => p).Count());
+            
             throw;
         }
     }
