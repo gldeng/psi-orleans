@@ -77,6 +77,26 @@ public class SubTask
     /// </summary>
     [Id(6)]
     public SubTaskStatus Status { get; set; } = SubTaskStatus.Pending;
+    
+    /// <summary>
+    /// List of SubTask IDs that this subtask depends on.
+    /// This subtask cannot start until all dependency subtasks are completed.
+    /// </summary>
+    [Id(7)]
+    public List<string> Dependencies { get; set; } = new();
+    
+    /// <summary>
+    /// Result data from completed dependency subtasks.
+    /// Key is the dependency SubTask ID, value is the result content.
+    /// </summary>
+    [Id(8)]
+    public Dictionary<string, string> DependencyResults { get; set; } = new();
+    
+    /// <summary>
+    /// Whether this subtask can be started (all dependencies satisfied)
+    /// </summary>
+    [Id(9)]
+    public bool CanStart { get; set; } = true;
 }
 
 /// <summary>

@@ -6,6 +6,7 @@ using Orleans;
 using PsiOrleans.Grains;
 using PsiOrleans.Models;
 using PsiOrleans.Services;
+using System.Text;
 
 namespace PsiOrleans.Services;
 
@@ -123,6 +124,7 @@ public class OrchestratorStateMachine : IAgentStateMachine
     /// <summary>
     /// Process callbacks from child agents using async event-driven pattern.
     /// Uses LLM to analyze progress and make orchestration decisions.
+    /// After processing each callback, checks for newly available tasks to delegate.
     /// </summary>
     public async Task ProcessCallbackAsync(string callId, string message, bool isSuccess, ConfigurableAgentState state, Kernel kernel)
     {
@@ -143,13 +145,40 @@ public class OrchestratorStateMachine : IAgentStateMachine
             childCallbackActivity?.SetTag("child_callback.call_id", callId);
             childCallbackActivity?.SetTag("child_callback.success", isSuccess);
             
-            await ProcessChildCallback(callId, message, isSuccess, state);
+            var completedSubTask = await ProcessChildCallback(callId, message, isSuccess, state);
             
             childCallbackActivity?.SetTag("child_callback.pending_after", state.PendingCallbacks.Count);
             childCallbackActivity?.SetTag("child_callback.completed_total", state.CompletedCallbacks.Count);
             AgentTracingService.SetSuccess(childCallbackActivity, "Child callback processed and state updated");
             
-            // Phase 2: Use LLM to analyze current progress and make orchestration decision
+            // Phase 2: Update dependency results and check for newly available tasks
+            if (isSuccess && completedSubTask != null)
+            {
+                using var dependencyUpdateActivity = AgentTracingService.StartAgentActivity("UpdateDependencies", state.AgentId);
+                
+                await UpdateDependencyResults(completedSubTask, message, state);
+                var newlyAvailableTasks = CheckForNewlyAvailableTasks(state);
+                
+                dependencyUpdateActivity?.SetTag("dependency.completed_subtask_id", completedSubTask.SubTaskId);
+                dependencyUpdateActivity?.SetTag("dependency.newly_available_count", newlyAvailableTasks.Count);
+                AgentTracingService.SetSuccess(dependencyUpdateActivity, $"Updated dependencies, {newlyAvailableTasks.Count} tasks now available");
+                
+                // Phase 3: Delegate newly available tasks
+                if (newlyAvailableTasks.Count > 0)
+                {
+                    using var newDelegationActivity = AgentTracingService.StartAgentActivity("DelegateNewlyAvailableTasks", state.AgentId);
+                    
+                    await DelegateTasks(newlyAvailableTasks, state);
+                    
+                    newDelegationActivity?.SetTag("new_delegation.task_count", newlyAvailableTasks.Count);
+                    AgentTracingService.SetSuccess(newDelegationActivity, $"Delegated {newlyAvailableTasks.Count} newly available tasks");
+                    
+                    _logger.LogInformation("Delegated {NewTaskCount} newly available tasks after dependency completion", 
+                        newlyAvailableTasks.Count);
+                }
+            }
+            
+            // Phase 4: Use LLM to analyze current progress and make orchestration decision
             using var orchestrationAnalysisActivity = AgentTracingService.StartKernelActivity("OrchestratorLLM.AnalyzeProgress", state.AgentId);
             orchestrationAnalysisActivity?.SetTag("analysis.pending_callbacks", state.PendingCallbacks.Count);
             orchestrationAnalysisActivity?.SetTag("analysis.completed_callbacks", state.CompletedCallbacks.Count);
@@ -160,7 +189,7 @@ public class OrchestratorStateMachine : IAgentStateMachine
             orchestrationAnalysisActivity?.SetTag("analysis.decision", decision.ToString());
             AgentTracingService.SetSuccess(orchestrationAnalysisActivity, $"LLM orchestration decision: {decision}");
             
-            // Phase 3: Execute the orchestration decision
+            // Phase 5: Execute the orchestration decision
             using var decisionExecutionActivity = AgentTracingService.StartAgentActivity("ExecuteOrchestrationDecision", state.AgentId);
             decisionExecutionActivity?.SetTag("decision.type", decision.ToString());
             
@@ -202,20 +231,42 @@ Original Task: {task}
 
 Requirements:
 1. Each subtask should be specific and actionable
-2. Subtasks should be relatively independent (minimal dependencies)
+2. Identify dependencies between subtasks - which subtasks need results from other subtasks
 3. Each subtask should be suitable for a specialized agent with focused tools
 4. Provide a brief rationale for the breakdown
+5. Use simple numeric IDs (1, 2, 3, etc.) for subtask identification
+
+Example for ""What percentage of US GDP does New York represent?"":
+- Subtask 1: Get US GDP data (no dependencies)
+- Subtask 2: Get New York GDP data (no dependencies) 
+- Subtask 3: Calculate percentage (depends on results from subtasks 1 and 2)
 
 Respond in this exact JSON format:
 {{
     ""subtasks"": [
         {{
+            ""id"": ""1"",
             ""task"": ""Specific subtask description"",
             ""rationale"": ""Why this subtask is needed"",
-            ""suggestedTools"": [""tool1"", ""tool2""]
+            ""suggestedTools"": [""tool1"", ""tool2""],
+            ""dependencies"": []
+        }},
+        {{
+            ""id"": ""2"",
+            ""task"": ""Another subtask description"",
+            ""rationale"": ""Why this subtask is needed"",
+            ""suggestedTools"": [""tool1""],
+            ""dependencies"": []
+        }},
+        {{
+            ""id"": ""3"",
+            ""task"": ""Final calculation subtask"",
+            ""rationale"": ""Combine results from previous subtasks"",
+            ""suggestedTools"": [""Math.Divide""],
+            ""dependencies"": [""1"", ""2""]
         }}
     ],
-    ""overallStrategy"": ""Brief explanation of the delegation strategy""
+    ""overallStrategy"": ""Brief explanation of the delegation strategy and dependency flow""
 }}";
 
             var result = await chatService.GetChatMessageContentAsync(delegationPrompt);
@@ -223,13 +274,16 @@ Respond in this exact JSON format:
             
             _logger.LogInformation("LLM delegation planning response: {Response}", responseContent);
             
-            // Parse the LLM response to create SubTask objects
+            // Parse the LLM response to create SubTask objects with dependencies
             var subTasks = ParseDelegationResponse(responseContent, state);
+            
+            // Update CanStart status based on dependencies
+            UpdateSubTaskStartability(subTasks);
             
             // Store subtasks in state for tracking
             state.CurrentSubTasks = subTasks;
             
-            _logger.LogInformation("Planned {SubTaskCount} subtasks for delegation", subTasks.Count);
+            _logger.LogInformation("Planned {SubTaskCount} subtasks for delegation with dependencies", subTasks.Count);
             return subTasks;
         }
         catch (Exception ex)
@@ -240,7 +294,7 @@ Respond in this exact JSON format:
     }
 
     /// <summary>
-    /// Parse LLM response to extract subtasks.
+    /// Parse LLM response to extract subtasks with dependencies.
     /// Uses basic JSON parsing with fallback to text parsing.
     /// </summary>
     private List<SubTask> ParseDelegationResponse(string response, ConfigurableAgentState state)
@@ -262,14 +316,37 @@ Respond in this exact JSON format:
                         Task = subtaskElement.GetProperty("task").GetString() ?? "",
                         SuggestedRole = AgentRole.Specialized, // Default to specialized
                         RequiredTools = new List<string>(),
-                        Priority = 1
+                        Priority = 1,
+                        Dependencies = new List<string>(),
+                        DependencyResults = new Dictionary<string, string>(),
+                        CanStart = true // Will be updated by UpdateSubTaskStartability
                     };
                     
+                    // Set SubTaskId from LLM-provided ID if available
+                    if (subtaskElement.TryGetProperty("id", out var idElement))
+                    {
+                        subtask.SubTaskId = idElement.GetString() ?? Guid.NewGuid().ToString();
+                    }
+                    
+                    // Parse suggested tools
                     if (subtaskElement.TryGetProperty("suggestedTools", out var toolsArray))
                     {
                         foreach (var tool in toolsArray.EnumerateArray())
                         {
                             subtask.RequiredTools.Add(tool.GetString() ?? "");
+                        }
+                    }
+                    
+                    // Parse dependencies
+                    if (subtaskElement.TryGetProperty("dependencies", out var dependenciesArray))
+                    {
+                        foreach (var dependency in dependenciesArray.EnumerateArray())
+                        {
+                            var depId = dependency.GetString();
+                            if (!string.IsNullOrEmpty(depId))
+                            {
+                                subtask.Dependencies.Add(depId);
+                            }
                         }
                     }
                     
@@ -281,19 +358,25 @@ Respond in this exact JSON format:
         {
             _logger.LogWarning(ex, "Failed to parse JSON delegation response, falling back to text parsing");
             
-            // Fallback: Create simple subtasks from text
+            // Fallback: Create simple subtasks from text without dependencies
             var lines = response.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            var taskCounter = 1;
             foreach (var line in lines)
             {
                 if (line.Trim().Length > 10 && !line.Contains("strategy", StringComparison.OrdinalIgnoreCase))
                 {
                     subTasks.Add(new SubTask
                     {
+                        SubTaskId = taskCounter.ToString(),
                         Task = line.Trim(),
                         SuggestedRole = AgentRole.Specialized,
                         RequiredTools = new List<string>(),
-                        Priority = 1
+                        Priority = 1,
+                        Dependencies = new List<string>(),
+                        DependencyResults = new Dictionary<string, string>(),
+                        CanStart = true
                     });
+                    taskCounter++;
                 }
             }
         }
@@ -303,14 +386,46 @@ Respond in this exact JSON format:
         {
             subTasks.Add(new SubTask
             {
+                SubTaskId = "1",
                 Task = state.CurrentTask ?? "Process task as specialized agent",
                 SuggestedRole = AgentRole.Specialized,
                 RequiredTools = new List<string>(),
-                Priority = 1
+                Priority = 1,
+                Dependencies = new List<string>(),
+                DependencyResults = new Dictionary<string, string>(),
+                CanStart = true
             });
         }
         
         return subTasks;
+    }
+
+    /// <summary>
+    /// Update CanStart status for all subtasks based on their dependencies.
+    /// Subtasks can only start if all their dependencies are completed.
+    /// </summary>
+    private void UpdateSubTaskStartability(List<SubTask> subTasks)
+    {
+        foreach (var subTask in subTasks)
+        {
+            if (subTask.Dependencies.Count == 0)
+            {
+                // No dependencies - can start immediately
+                subTask.CanStart = true;
+            }
+            else
+            {
+                // Check if all dependencies are completed
+                subTask.CanStart = subTask.Dependencies.All(depId =>
+                {
+                    var dependencyTask = subTasks.FirstOrDefault(st => st.SubTaskId == depId);
+                    return dependencyTask?.Status == SubTaskStatus.Completed;
+                });
+            }
+        }
+        
+        _logger.LogDebug("Updated startability: {StartableCount} of {TotalCount} subtasks can start",
+            subTasks.Count(st => st.CanStart), subTasks.Count);
     }
 
     /// <summary>
@@ -460,13 +575,26 @@ When finished, you will automatically send a completion callback to your parent 
 
     /// <summary>
     /// Delegate subtasks to child agents (non-blocking).
+    /// Only delegates tasks that have all dependencies satisfied (CanStart=true).
     /// Stores pending callbacks for tracking.
     /// </summary>
     private async Task DelegateTasks(List<SubTask> subTasks, ConfigurableAgentState state)
     {
-        _logger.LogDebug("Delegating {SubTaskCount} tasks to child agents", subTasks.Count);
+        var availableTasks = subTasks.Where(st => 
+            st.ChildAgentId != null && 
+            st.Status == SubTaskStatus.Pending && 
+            st.CanStart).ToList();
+            
+        _logger.LogDebug("Delegating {AvailableTaskCount} of {TotalTaskCount} tasks to child agents (dependency-aware)", 
+            availableTasks.Count, subTasks.Count);
         
-        foreach (var subTask in subTasks.Where(st => st.ChildAgentId != null && st.Status == SubTaskStatus.Pending))
+        if (availableTasks.Count == 0)
+        {
+            _logger.LogInformation("No subtasks are ready to start due to dependency constraints");
+            return;
+        }
+        
+        foreach (var subTask in availableTasks)
         {
             try
             {
@@ -485,20 +613,24 @@ When finished, you will automatically send a completion callback to your parent 
                 // Store pending callback in state
                 state.AddPendingCallback(callId, callbackData);
                 
+                // Include dependency results in the task context if any - need kernel from state
+                var kernel = await GetKernelFromState(state);
+                var taskWithContext = await PrepareTaskWithDependencyContextAsync(subTask, kernel);
+                
                 // Delegate task to child (non-blocking with enhanced timeout handling)
                 _ = Task.Run(async () =>
                 {
                     try
                     {
                         _logger.LogInformation("Starting child agent execution for {ChildId} with task: {Task}", 
-                            subTask.ChildAgentId, subTask.Task.Length > 100 ? subTask.Task.Substring(0, 100) + "..." : subTask.Task);
+                            subTask.ChildAgentId, taskWithContext.Length > 100 ? taskWithContext.Substring(0, 100) + "..." : taskWithContext);
                         
                         // Create a cancellation token with timeout for the specific operation
                         using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(8)); // Slightly longer than Orleans timeout
                         
                         try
                         {
-                            var result = await childAgent.ProcessTaskAsync(subTask.Task, state.AgentId);
+                            var result = await childAgent.ProcessTaskAsync(taskWithContext, state.AgentId);
                             
                             _logger.LogInformation("Child agent {ChildId} completed task successfully", subTask.ChildAgentId);
                             // Child will send callback automatically when complete
@@ -559,10 +691,122 @@ When finished, you will automatically send a completion callback to your parent 
     }
 
     /// <summary>
-    /// Process callback from child agent and update tracking state.
+    /// Get kernel from configuration state for LLM operations.
     /// </summary>
-    private Task ProcessChildCallback(string callId, string message, bool isSuccess, ConfigurableAgentState state)
+    private async Task<Kernel> GetKernelFromState(ConfigurableAgentState state)
     {
+        if (state.Configuration == null)
+        {
+            throw new InvalidOperationException("Agent configuration is null");
+        }
+        
+        // Create a kernel with current configuration
+        return await _kernelService.CreateKernelAsync(state.Configuration, state.OriginalToolNames);
+    }
+
+    /// <summary>
+    /// Prepare task with dependency context by using LLM to intelligently frame the subtask
+    /// with relevant information from completed dependencies.
+    /// </summary>
+    private async Task<string> PrepareTaskWithDependencyContextAsync(SubTask subTask, Kernel kernel)
+    {
+        if (subTask.Dependencies.Count == 0 || subTask.DependencyResults.Count == 0)
+        {
+            return subTask.Task;
+        }
+        
+        try
+        {
+            var chatService = kernel.GetRequiredService<IChatCompletionService>();
+            
+            // Gather dependency results
+            var dependencyInfo = new StringBuilder();
+            foreach (var dependency in subTask.Dependencies)
+            {
+                if (subTask.DependencyResults.TryGetValue(dependency, out var result))
+                {
+                    dependencyInfo.AppendLine($"Dependency {dependency} Result: {result}");
+                    dependencyInfo.AppendLine();
+                }
+            }
+            
+            var contextPrompt = $@"
+You are helping to frame a subtask for an AI agent by intelligently incorporating results from prerequisite tasks.
+
+Original Subtask: {subTask.Task}
+
+Results from completed prerequisite tasks:
+{dependencyInfo}
+
+Your task is to:
+1. Analyze the prerequisite results and extract information relevant to the current subtask
+2. Reframe the original subtask description to be more specific and actionable based on the available data
+3. Include any specific values, calculations, or context that the agent will need
+4. Create a clear, focused task description that incorporates the prerequisite information
+
+Provide a well-framed task description that includes:
+- The original task intent
+- Specific data from prerequisites that should be used
+- Clear instructions on how to use the prerequisite information
+- Any calculations or operations that should be performed with the data
+
+Reframed task description:";
+
+            var llmResponse = await chatService.GetChatMessageContentAsync(contextPrompt);
+            var reframedTask = llmResponse.Content ?? subTask.Task;
+            
+            _logger.LogInformation("LLM reframed subtask {SubTaskId}: Original='{Original}', Reframed='{Reframed}'", 
+                subTask.SubTaskId, subTask.Task, reframedTask);
+                
+            return reframedTask;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error using LLM to prepare task context for subtask {SubTaskId}, falling back to simple concatenation", 
+                subTask.SubTaskId);
+                
+            // Fallback to the original simple concatenation approach
+            return PrepareTaskWithDependencyContextFallback(subTask);
+        }
+    }
+
+    /// <summary>
+    /// Fallback method for simple text concatenation when LLM context preparation fails.
+    /// </summary>
+    private string PrepareTaskWithDependencyContextFallback(SubTask subTask)
+    {
+        if (subTask.Dependencies.Count == 0 || subTask.DependencyResults.Count == 0)
+        {
+            return subTask.Task;
+        }
+        
+        var contextBuilder = new StringBuilder();
+        contextBuilder.AppendLine($"Task: {subTask.Task}");
+        contextBuilder.AppendLine();
+        contextBuilder.AppendLine("Results from prerequisite tasks:");
+        
+        foreach (var dependency in subTask.Dependencies)
+        {
+            if (subTask.DependencyResults.TryGetValue(dependency, out var result))
+            {
+                contextBuilder.AppendLine($"From subtask {dependency}: {result}");
+            }
+        }
+        
+        contextBuilder.AppendLine();
+        contextBuilder.AppendLine("Use the above prerequisite results to complete your task.");
+        
+        return contextBuilder.ToString();
+    }
+
+    /// <summary>
+    /// Process callback from child agent and update tracking state.
+    /// Returns the completed SubTask for dependency tracking.
+    /// </summary>
+    private Task<SubTask?> ProcessChildCallback(string callId, string message, bool isSuccess, ConfigurableAgentState state)
+    {
+        SubTask? completedSubTask = null;
+        
         if (state.PendingCallbacks.TryGetValue(callId, out var callbackData))
         {
             // Update callback data
@@ -575,10 +819,10 @@ When finished, you will automatically send a completion callback to your parent 
             state.CompletePendingCallback(callId);
             
             // Update corresponding subtask status
-            var subTask = state.CurrentSubTasks.FirstOrDefault(st => st.ChildAgentId == callbackData.ChildAgentId);
-            if (subTask != null)
+            completedSubTask = state.CurrentSubTasks.FirstOrDefault(st => st.ChildAgentId == callbackData.ChildAgentId);
+            if (completedSubTask != null)
             {
-                subTask.Status = isSuccess ? SubTaskStatus.Completed : SubTaskStatus.Failed;
+                completedSubTask.Status = isSuccess ? SubTaskStatus.Completed : SubTaskStatus.Failed;
             }
             
             _logger.LogInformation("Processed callback {CallId} from child {ChildAgentId}: Success={Success}", 
@@ -589,7 +833,48 @@ When finished, you will automatically send a completion callback to your parent 
             _logger.LogWarning("Received unexpected callback {CallId} for agent {AgentId}", callId, state.AgentId);
         }
         
+        return Task.FromResult(completedSubTask);
+    }
+
+    /// <summary>
+    /// Update dependency results for subtasks that depend on the completed task.
+    /// </summary>
+    private Task UpdateDependencyResults(SubTask completedSubTask, string result, ConfigurableAgentState state)
+    {
+        // Find all subtasks that depend on this completed subtask
+        var dependentTasks = state.CurrentSubTasks.Where(st => 
+            st.Dependencies.Contains(completedSubTask.SubTaskId)).ToList();
+        
+        foreach (var dependentTask in dependentTasks)
+        {
+            // Store the result for this dependency
+            dependentTask.DependencyResults[completedSubTask.SubTaskId] = result;
+            
+            _logger.LogDebug("Updated dependency result for subtask {DependentId} from completed subtask {CompletedId}", 
+                dependentTask.SubTaskId, completedSubTask.SubTaskId);
+        }
+        
+        // Update startability for all subtasks after dependency completion
+        UpdateSubTaskStartability(state.CurrentSubTasks);
+        
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Check for subtasks that are now available to start after dependency completion.
+    /// Returns subtasks that have all dependencies satisfied and are ready to be delegated.
+    /// </summary>
+    private List<SubTask> CheckForNewlyAvailableTasks(ConfigurableAgentState state)
+    {
+        var newlyAvailable = state.CurrentSubTasks.Where(st =>
+            st.Status == SubTaskStatus.Pending &&  // Not yet delegated
+            st.CanStart &&                         // Dependencies satisfied
+            !string.IsNullOrEmpty(st.ChildAgentId) // Child agent created
+        ).ToList();
+        
+        _logger.LogDebug("Found {Count} newly available tasks after dependency update", newlyAvailable.Count);
+        
+        return newlyAvailable;
     }
 
     /// <summary>

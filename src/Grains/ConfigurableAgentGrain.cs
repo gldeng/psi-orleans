@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Threading;
 using System.Text;
 using System.Text.Json;
+using System.Linq;
 
 namespace PsiOrleans.Grains;
 
@@ -1452,9 +1453,35 @@ Respond with exactly one word: ORCHESTRATOR or SPECIALIZED";
                 for (int i = 0; i < _state.CurrentSubTasks.Count; i++)
                 {
                     var subTask = _state.CurrentSubTasks[i];
-                    stateInfo.AppendLine($"  {i + 1}. [{subTask.Status}] {subTask.Task}");
+                    var canStartIndicator = subTask.CanStart ? "🟢" : "🔴";
+                    stateInfo.AppendLine($"  {i + 1}. [{subTask.Status}] {canStartIndicator} {subTask.Task}");
                     stateInfo.AppendLine($"     SubTask ID: {subTask.SubTaskId}");
                     stateInfo.AppendLine($"     Priority: {subTask.Priority}");
+                    
+                    // Show dependencies
+                    if (subTask.Dependencies.Count > 0)
+                    {
+                        stateInfo.AppendLine($"     Dependencies: {string.Join(", ", subTask.Dependencies)}");
+                        
+                        // Show dependency status
+                        var dependencyStatus = subTask.Dependencies.Select(depId =>
+                        {
+                            var depTask = _state.CurrentSubTasks.FirstOrDefault(st => st.SubTaskId == depId);
+                            return depTask != null ? $"{depId}({depTask.Status})" : $"{depId}(NotFound)";
+                        });
+                        stateInfo.AppendLine($"     Dependency Status: {string.Join(", ", dependencyStatus)}");
+                        
+                        // Show available dependency results
+                        if (subTask.DependencyResults.Count > 0)
+                        {
+                            stateInfo.AppendLine($"     Available Results: {string.Join(", ", subTask.DependencyResults.Keys)}");
+                        }
+                    }
+                    else
+                    {
+                        stateInfo.AppendLine($"     Dependencies: none");
+                    }
+                    
                     if (subTask.RequiredTools.Count > 0)
                     {
                         stateInfo.AppendLine($"     Required Tools: {string.Join(", ", subTask.RequiredTools)}");
