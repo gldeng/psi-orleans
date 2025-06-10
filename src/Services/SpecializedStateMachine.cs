@@ -274,7 +274,7 @@ public class SpecializedStateMachine : IAgentStateMachine
             
             // Enhanced user message to force tool usage
             var enhancedTask = task + 
-                "\n\nREQUIREMENT: You must use the available tool functions.";
+                "\n\nREQUIREMENT: Use the available tool functions. When you are done, summarize the result but do no more tool calls.";
             
             chatHistory.AddUserMessage(enhancedTask);
             _logger.LogInformation("Added enhanced user message: {Task}", enhancedTask);

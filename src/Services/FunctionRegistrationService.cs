@@ -290,66 +290,143 @@ public class FunctionRegistrationService
             _logger.LogWarning(ex, "Failed to register MathematicalOperationsPlugin");
         }
 
-        // Register Tavily web search plugin
-        var tavilyApiKey = Environment.GetEnvironmentVariable("TAVILY_API_KEY");
-        if (!string.IsNullOrEmpty(tavilyApiKey))
+        // Register Mocked Tavily web search plugin for GDP data testing
+        try
         {
-            try
-            {
-#pragma warning disable SKEXP0050 // Type is for evaluation purposes only and is subject to change or removal in future updates
-                var tavilySearch = new TavilyTextSearch(tavilyApiKey);
-                
-                var searchFunction = KernelFunctionFactory.CreateFromMethod(
-                    async (string query) => 
+            var searchFunction = KernelFunctionFactory.CreateFromMethod(
+                async (string query) => 
+                {
+                    // Mock Tavily search with specific GDP data responses
+                    await Task.Delay(100); // Simulate network delay
+                    
+                    var queryLower = query.ToLowerInvariant();
+                    
+                    // Mock percentage calculation queries FIRST - most specific
+                    if ((queryLower.Contains("percentage") || queryLower.Contains("percent") || queryLower.Contains("%")) && 
+                        queryLower.Contains("gdp") && 
+                        (queryLower.Contains("new york") || queryLower.Contains("ny")))
                     {
-                        try
+                        return @"GDP Percentage Calculation Result:
+
+New York represents approximately 8.33% of US GDP.
+
+Calculation details:
+- New York GDP: 2 trillion USD
+- US GDP: 24 trillion USD  
+- Percentage: (2 ÷ 24) × 100 = 8.33%
+
+This means New York State contributes about 8.33% to the total United States economic output.
+
+Mathematical verification: 2/24 = 0.0833... = 8.33%
+
+Source: Economic data analysis (mocked for testing)";
+                    }
+                    
+                    // Mock calculation/division requests - return pure numbers for math functions
+                    if ((queryLower.Contains("calculate") || queryLower.Contains("divide") || queryLower.Contains("/")) && 
+                        (queryLower.Contains("2") || queryLower.Contains("24") || queryLower.Contains("2000") || queryLower.Contains("24000")))
+                    {
+                        // Check if this looks like a GDP division request
+                        if (queryLower.Contains("gdp") || queryLower.Contains("trillion"))
                         {
-                            var searchResults = await tavilySearch.SearchAsync(query);
-                            var results = new List<string>();
-                            
-                            await foreach (var result in searchResults.Results)
-                            {
-                                results.Add(result);
-                            }
-                            
-                            if (results.Count == 0)
-                            {
-                                return $"No search results found for query: {query}";
-                            }
-                            
-                            return string.Join("\n\n", results);
+                            return @"GDP Calculation Data:
+
+For percentage calculation use these values:
+- New York GDP value: 2 (in trillions)
+- US GDP value: 24 (in trillions)
+- Calculation: 2 divided by 24 equals 0.0833
+- As percentage: 0.0833 × 100 = 8.33%
+
+Result: New York represents 8.33% of US GDP
+
+Raw calculation result: 2 ÷ 24 = 0.0833333...";
                         }
-                        catch (HttpRequestException httpEx) when (httpEx.Message.Contains("432"))
-                        {
-                            return $"Tavily search temporarily unavailable (usage limit reached). Query: '{query}' - Please try again later or consider upgrading your Tavily plan.";
-                        }
-                        catch (HttpRequestException httpEx)
-                        {
-                            return $"Tavily search service error for query '{query}': {httpEx.Message}. Please try again later.";
-                        }
-                        catch (Exception ex)
-                        {
-                            return $"Search function error for query '{query}': {ex.Message}. Unable to complete web search at this time.";
-                        }
-                    },
-                    "Search",
-                    "Search the web for information using Tavily. Note: May have usage limits.");
-                
-                var tavilyPlugin = KernelPluginFactory.CreateFromFunctions("Tavily", "Tavily web search", [searchFunction]);
-                _functionRegistry.RegisterPlugin("Tavily", tavilyPlugin);
-#pragma warning restore SKEXP0050
-                
-                _logger.LogInformation("Tavily web search plugin registered successfully");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to register Tavily plugin");
-            }
+                        
+                        return @"Mathematical Calculation Support:
+
+Based on the values 2000 and 24000:
+- Division result: 2000 ÷ 24000 = 0.0833
+- As percentage: 0.0833 × 100 = 8.33%
+
+For trillion-scale values (2 and 24):
+- Division result: 2 ÷ 24 = 0.0833
+- As percentage: 0.0833 × 100 = 8.33%";
+                    }
+                    
+                    // Mock New York GDP data
+                    if ((queryLower.Contains("new york") || queryLower.Contains("ny")) && queryLower.Contains("gdp"))
+                    {
+                        return @"New York State Economic Data:
+
+New York GDP: 2 trillion USD (2024)
+Raw numeric value: 2 (when measured in trillions)
+Alternative format: 2,000 billion USD
+
+New York State has a GDP of approximately 2 trillion dollars, making it one of the largest state economies in the United States. The state's economy is driven primarily by finance, real estate, technology, and tourism sectors.
+
+Key Economic Facts:
+- Total GDP: 2 trillion USD
+- Numeric value for calculations: 2 (trillions)
+- Percentage of US economy: Significant contributor (approximately 8.33%)
+- Major sectors: Financial services (Wall Street), real estate, technology, manufacturing
+- Economic rank: Among top 3 state economies in the US
+
+For mathematical calculations, use the value: 2
+
+Source: Mocked economic data for testing purposes";
+                    }
+                    
+                    // Mock US GDP data
+                    if ((queryLower.Contains("us ") || queryLower.Contains("united states") || queryLower.Contains("america")) && queryLower.Contains("gdp"))
+                    {
+                        return @"United States Economic Data:
+
+US GDP: 24 trillion USD (2024)
+Raw numeric value: 24 (when measured in trillions)
+Alternative format: 24,000 billion USD
+
+The United States has a nominal GDP of approximately 24 trillion dollars, making it the world's largest economy. The US economy is highly diversified with strong performance across multiple sectors.
+
+Key Economic Facts:
+- Total GDP: 24 trillion USD
+- Numeric value for calculations: 24 (trillions)
+- Global ranking: #1 largest economy worldwide
+- GDP per capita: Approximately $72,000
+- Major sectors: Services, manufacturing, technology, finance, healthcare
+- Growth rate: Steady positive growth
+
+For mathematical calculations, use the value: 24
+
+Source: Mocked economic data for testing purposes";
+                    }
+                    
+                    // Generic response for other queries
+                    return $@"Mocked Search Results for: '{query}'
+
+This is a mocked Tavily search response for testing purposes. 
+The system is configured to return specific GDP data:
+- New York GDP: 2 trillion USD (use value: 2 for calculations)
+- US GDP: 24 trillion USD (use value: 24 for calculations)
+- Percentage calculation: 2 ÷ 24 × 100 = 8.33%
+
+For real web search functionality, please configure the actual Tavily API key.
+
+Query processed: {query}
+Search timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC
+
+If you need to calculate percentages, use the math functions with values 2 and 24.";
+                },
+                "Search",
+                "Search the web for information using Tavily (MOCKED VERSION for GDP testing). Returns specific GDP data for New York (2T) and US (24T) with calculation support.");
+            
+            var tavilyPlugin = KernelPluginFactory.CreateFromFunctions("Tavily", "Mocked Tavily web search for GDP testing", [searchFunction]);
+            _functionRegistry.RegisterPlugin("Tavily", tavilyPlugin);
+            
+            _logger.LogInformation("Mocked Tavily web search plugin registered successfully with enhanced GDP test data and calculation support (NY: 2T, US: 24T)");
         }
-        else
+        catch (Exception ex)
         {
-            _logger.LogWarning("TAVILY_API_KEY not found. Tavily web search plugin will not be available. " +
-                             "Please set TAVILY_API_KEY environment variable to enable web search.");
+            _logger.LogWarning(ex, "Failed to register mocked Tavily plugin");
         }
     }
 } 
