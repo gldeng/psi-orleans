@@ -4,7 +4,7 @@
 
 This document outlines a comprehensive refactoring strategy for the PsiOrleans codebase, transforming it from a monolithic structure into a clean, maintainable, service-oriented architecture while preserving the state machine functionality.
 
-**Critical Architectural Insight**: The execution flow IS the state machine. Orchestrator agents use asynchronous, event-driven execution patterns (delegate to children, process callbacks as they arrive), while specialized agents use synchronous, direct execution patterns (await tool results immediately, send completion callbacks). These fundamentally different execution patterns require separate state machine implementations.
+**Critical Architectural Insight**: Both agent types use asynchronous, callback-driven execution patterns. Orchestrator agents delegate to child agents and process callbacks as they arrive, while specialized agents execute tools directly but still use callbacks to notify parents asynchronously. This unified callback mechanism eliminates synchronous waiting patterns throughout the system, ensuring consistent non-blocking behavior.
 
 ## Current Issues
 
@@ -13,17 +13,17 @@ This document outlines a comprehensive refactoring strategy for the PsiOrleans c
 - **Model Duplication**: AgentState and ConfigurableAgentState overlap
 - **Tight Coupling**: Business logic mixed with infrastructure concerns
 - **Poor Testability**: Monolithic structure makes unit testing difficult
-- **Execution Pattern Confusion**: Single implementation trying to handle both async event-driven and sync direct execution
+- **Mixed Execution Patterns**: Inconsistent synchronous and asynchronous execution flows
 
 ## Refactoring Benefits
 
 - ✅ **Reduced Complexity**: ConfigurableAgentGrain drops from 1227 lines to ~300 lines
 - ✅ **Single Responsibility**: Each service has one clear purpose
-- ✅ **Execution Pattern Clarity**: Separate state machines for different execution flows
+- ✅ **Unified Callback Pattern**: Both agent types use consistent async callback mechanisms
 - ✅ **Testability**: Individual services can be unit tested independently  
 - ✅ **Maintainability**: Changes to state machine logic don't affect grain infrastructure
 - ✅ **Reusability**: Services can be reused across different grain types
-- ✅ **Performance**: Removed duplicate/legacy code reduces memory footprint
+- ✅ **Performance**: Non-blocking execution patterns improve system responsiveness
 - ✅ **Type Safety**: Value objects prevent invalid state mutations
 
 ---
@@ -205,8 +205,8 @@ classDiagram
     UnifiedAgentState --> AgentRole
     TaskExecutionContext --> AgentRole
 
-    note for OrchestratorStateMachine "Async Event-Driven Execution:\n- Delegates to child agents\n- Processes callbacks as events\n- Non-blocking delegation\n- Coordinates complex workflows"
-    note for SpecializedStateMachine "Sync Direct Execution:\n- Awaits tool results immediately\n- Sends completion callbacks\n- Linear execution flow\n- No child agent management"
+    note for OrchestratorStateMachine "Async Callback-Driven Execution:\n- Delegates to child agents\n- Processes callbacks as events\n- Non-blocking delegation\n- Coordinates complex workflows"
+    note for SpecializedStateMachine "Async Callback-Driven Execution:\n- Executes tools directly\n- Sends completion callbacks\n- Non-blocking tool execution\n- No child agent management"
 ```
 
 ---
@@ -251,7 +251,7 @@ sequenceDiagram
     alt Role is Orchestrator
         Factory-->>Grain: OrchestratorStateMachine
         Grain->>OrcSM: ExecuteTaskAsync(task, kernel, state, config)
-        Note over OrcSM: Async Event-Driven Execution
+        Note over OrcSM: Async Callback-Driven Execution
         OrcSM->>OrcSM: PlanDelegation(task, kernel)
         OrcSM->>CommHandler: CreateChildAgentAsync(childId, config)
         CommHandler-->>OrcSM: Child agent created
@@ -299,18 +299,21 @@ sequenceDiagram
     else Role is Specialized
         Factory-->>Grain: SpecializedStateMachine
         Grain->>SpecSM: ExecuteTaskAsync(task, kernel, state, config)
-        Note over SpecSM: Sync Direct Execution
+        Note over SpecSM: Async Callback-Driven Execution
         SpecSM->>SpecSM: ExecuteWithDirectTools(task, kernel)
-        Note over SpecSM: Await tool results immediately
+        Note over SpecSM: Initiate tool execution asynchronously
+        SpecSM-->>Grain: "Tool execution initiated"
+        
+        Note over SpecSM: Tool execution completes independently...
         SpecSM->>SpecSM: ProcessToolResults()
         SpecSM->>CommHandler: SendParentCallbackAsync(parentId, result, true)
         CommHandler-->>SpecSM: Callback sent
-        SpecSM-->>Grain: Direct execution result
+        Note over SpecSM: Parent notified via callback
     end
 
     Grain-->>Client: Task result
 
-    Note over Grain,ChildGrain: Key Pattern: Orchestrator delegates and processes callbacks as events,\nSpecialized executes directly and sends completion callback
+    Note over Grain,ChildGrain: Key Pattern: Both agent types use async callbacks,\nOrchestrator delegates to child agents, Specialized executes tools directly
 ```
 
 ---
@@ -332,8 +335,8 @@ graph TB
     end
 
     subgraph "State Machine Implementation Layer"
-        OSM[OrchestratorStateMachine<br/>Async Event-Driven]
-        SSM[SpecializedStateMachine<br/>Sync Direct]
+        OSM[OrchestratorStateMachine<br/>Async Callback-Driven]
+        SSM[SpecializedStateMachine<br/>Async Callback-Driven]
     end
 
     subgraph "Service Implementation Layer"
@@ -411,7 +414,7 @@ stateDiagram-v2
         AggregatingResults --> [*] : Task Complete
         
         note right of AwaitingCallbacks
-            Event-Driven Callback Pattern:
+            Callback-Driven Pattern:
             - Non-blocking delegation
             - Process callbacks as events
             - Coordinate multiple children
@@ -421,18 +424,15 @@ stateDiagram-v2
     state SpecializedFlow {
         [*] --> ExecutingDirectly
         ExecutingDirectly --> UsingTools : Execute with Direct Tools
-        UsingTools --> AwaitingToolResult : Tool Invoked
-        AwaitingToolResult --> UsingTools : Continue with More Tools
-        AwaitingToolResult --> SendingCallback : Task Finished
-        SendingCallback --> [*] : Task Complete
+        UsingTools --> InitiatingCallback : Tool Execution Complete
+        InitiatingCallback --> [*] : Callback Sent to Parent
         
-        note right of AwaitingToolResult
-            Sync Direct Pattern with LLM Tool Calling:
-            - Configure task-specific tools for LLM
-            - LLM uses tool calling capability to execute
-            - Awaits each tool result synchronously
-            - Linear execution flow
-            - Immediate completion callback to parent
+        note right of UsingTools
+            Async Callback Pattern with Direct Tools:
+            - Configure task-specific tools
+            - Execute tools directly (non-blocking)
+            - Send completion callback to parent
+            - No child agent management needed
         end note
     }
 
@@ -516,8 +516,8 @@ graph LR
 
     subgraph "AFTER - Service-Oriented with Execution Pattern Separation"
         GRAIN_NEW[ConfigurableAgentGrain<br/>~300 lines<br/>Orchestration Only]
-        GRAIN_NEW --> OSM_SVC[OrchestratorStateMachine<br/>Async Event-Driven<br/>Parent-Child Coordination]
-        GRAIN_NEW --> SSM_SVC[SpecializedStateMachine<br/>Sync Direct Execution<br/>Linear Tool Processing]
+        GRAIN_NEW --> OSM_SVC[OrchestratorStateMachine<br/>Async Callback-Driven<br/>Parent-Child Coordination]
+        GRAIN_NEW --> SSM_SVC[SpecializedStateMachine<br/>Async Callback-Driven<br/>Linear Tool Processing]
         GRAIN_NEW --> CH_SVC[CommunicationHandler<br/>Parent-Child Callbacks]
         GRAIN_NEW --> RC_SVC[RoleConfigurator<br/>Tool & Prompt Setup]
     end
@@ -578,7 +578,7 @@ public class OrchestratorStateMachine : IAgentStateMachine
 
     public async Task<string> ExecuteTaskAsync(string task, Kernel kernel, UnifiedAgentState state, AgentConfiguration config)
     {
-        // Async Event-Driven Execution Pattern
+        // Async Callback-Driven Execution Pattern
         var subTasks = await PlanDelegation(task, kernel);
         await CreateChildAgents(subTasks);
         await DelegateTasks(subTasks);
@@ -830,10 +830,23 @@ public class SpecializedStateMachine : IAgentStateMachine
 
     public async Task<string> ExecuteTaskAsync(string task, Kernel kernel, UnifiedAgentState state, AgentConfiguration config)
     {
-        // Sync Direct Execution Pattern
-        var result = await ExecuteWithDirectTools(task, kernel);
-        await SendCompletionCallback(state.ParentAgentId, result, kernel);
-        return result;
+        // Async Callback-Driven Execution Pattern
+        // Execute tools and initiate callback to parent - no waiting
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var result = await ExecuteWithDirectTools(task, kernel);
+                await SendCompletionCallback(state.ParentAgentId, result, kernel);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error executing specialized task: {Task}", task);
+                await SendCompletionCallback(state.ParentAgentId, $"Error: {ex.Message}", kernel, false);
+            }
+        });
+        
+        return "Tool execution initiated"; // Returns immediately after initiating execution
     }
 
     public async Task ProcessCallbackAsync(string callId, string message, bool isSuccess, UnifiedAgentState state, Kernel kernel)
@@ -845,19 +858,21 @@ public class SpecializedStateMachine : IAgentStateMachine
 
     private async Task<string> ExecuteWithDirectTools(string task, Kernel kernel)
     {
-        // Linear execution with direct tool awaiting
+        // Direct tool execution without child agent delegation
+        var result = await kernel.InvokePromptAsync($"Execute this task using available tools: {task}");
+        return result.ToString();
     }
 
-    private async Task SendCompletionCallback(string parentId, string result, Kernel kernel)
+    private async Task SendCompletionCallback(string parentId, string result, Kernel kernel, bool isSuccess = true)
     {
-        // Send immediate completion callback to parent using tool
+        // Send completion callback to parent using tool
         if (!string.IsNullOrEmpty(parentId))
         {
             await kernel.InvokeAsync("SendParentCallback", new KernelArguments
             {
                 ["parentId"] = parentId,
                 ["result"] = result,
-                ["isSuccess"] = true
+                ["isSuccess"] = isSuccess
             });
         }
     }
