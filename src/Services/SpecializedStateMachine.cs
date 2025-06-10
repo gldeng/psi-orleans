@@ -11,13 +11,14 @@ using PsiOrleans.Services;
 namespace PsiOrleans.Services;
 
 /// <summary>
-/// State machine implementation for Specialized agents that use sync direct execution pattern.
+/// State machine implementation for Specialized agents that use async callback-driven execution pattern.
 /// 
 /// Execution Pattern:
-/// - Executes tasks directly using available tools
-/// - Awaits tool results synchronously (linear execution flow)
-/// - Sends completion callbacks to parent agent when finished
+/// - Initiates tool execution asynchronously in background tasks
+/// - Returns immediately with "Tool execution initiated" message
+/// - Sends completion callbacks to parent agent when tool execution finishes
 /// - Does not create or manage child agents
+/// - Provides non-blocking, responsive execution for simple/direct tasks
 /// </summary>
 public class SpecializedStateMachine : IAgentStateMachine
 {
@@ -36,14 +37,14 @@ public class SpecializedStateMachine : IAgentStateMachine
     }
 
     /// <summary>
-    /// Execute task using sync direct execution pattern.
-    /// Specialized agents use their configured tools directly and send completion callbacks.
+    /// Execute task using async callback-driven execution pattern.
+    /// Specialized agents initiate tool execution asynchronously and send completion callbacks.
     /// </summary>
     public async Task<string> ExecuteTaskAsync(string task, Kernel kernel, ConfigurableAgentState state, AgentConfiguration config)
     {
         // Start specialized execution tracing
         using var specializedExecutionActivity = AgentTracingService.StartAgentActivity("SpecializedStateMachine.ExecuteTask", state.AgentId, task);
-        specializedExecutionActivity?.SetTag("specialized.execution_pattern", "SyncDirect");
+        specializedExecutionActivity?.SetTag("specialized.execution_pattern", "AsyncCallbackDriven");
         specializedExecutionActivity?.SetTag("specialized.agent_id", state.AgentId);
         specializedExecutionActivity?.SetTag("specialized.task_length", task.Length);
         specializedExecutionActivity?.SetTag("specialized.parent_id", state.ParentAgentId ?? "none");
@@ -68,99 +69,119 @@ public class SpecializedStateMachine : IAgentStateMachine
         _logger.LogInformation("🔄 FLOW_STEP: Kernel validation - AgentId: {AgentId}, Available tools: {ToolCount} ({Tools})", 
             state.AgentId, availableTools.Count, string.Join(", ", availableTools.Take(3)));
 
-        try
+        // 🔄 FLOW_STEP: Starting async callback-driven execution
+        _logger.LogInformation("🔄 FLOW_STEP: Starting async callback-driven execution - AgentId: {AgentId}, Pattern: AsyncCallbackDriven", state.AgentId);
+        
+        // Phase 1: Async Callback-Driven Execution Pattern - Start background execution
+        // Generate a unique call ID for this execution
+        var callId = Guid.NewGuid().ToString();
+        
+        // Start background task for tool execution - DO NOT AWAIT
+        _ = Task.Run(async () =>
         {
-            // Phase 1: Sync Direct Execution Pattern - Execute with specialized tools
-            using var directExecutionActivity = AgentTracingService.StartAgentActivity("ExecuteWithDirectTools", state.AgentId, task);
-            directExecutionActivity?.SetTag("direct_execution.task", task.Length > 200 ? task.Substring(0, 200) + "..." : task);
-            directExecutionActivity?.SetTag("direct_execution.pattern", "ToolCalling");
-            directExecutionActivity?.SetTag("direct_execution.kernel_plugins", kernel.Plugins.Count);
-            
-            // 🔄 FLOW_STEP: Starting direct tool execution
-            _logger.LogInformation("🔄 FLOW_STEP: Starting direct tool execution - AgentId: {AgentId}, Pattern: SyncDirect", state.AgentId);
-            
-            var result = await ExecuteWithDirectTools(task, kernel, state, config);
-            
-            directExecutionActivity?.SetTag("direct_execution.result_length", result.Length);
-            directExecutionActivity?.SetTag("direct_execution.success", true);
-            
-            // ✅ FLOW_SUCCESS: Direct tool execution completed
-            _logger.LogInformation("✅ FLOW_SUCCESS: Direct tool execution completed - AgentId: {AgentId}, Result length: {Length}", 
-                state.AgentId, result.Length);
-            
-            AgentTracingService.SetSuccess(directExecutionActivity, "Direct tool execution completed successfully");
-            
-            // Phase 2: Send completion callback to parent if exists
-            if (!string.IsNullOrEmpty(state.ParentAgentId))
+            try
             {
-                using var callbackSendActivity = AgentTracingService.StartAgentActivity("SendCompletionCallbackToParent", state.AgentId);
-                callbackSendActivity?.SetTag("completion_callback.parent_id", state.ParentAgentId);
-                callbackSendActivity?.SetTag("completion_callback.success", true);
-                callbackSendActivity?.SetTag("completion_callback.result_length", result.Length);
+                using var backgroundExecutionActivity = AgentTracingService.StartAgentActivity("BackgroundToolExecution", state.AgentId, task);
+                backgroundExecutionActivity?.SetTag("background.call_id", callId);
+                backgroundExecutionActivity?.SetTag("background.task", task.Length > 200 ? task.Substring(0, 200) + "..." : task);
+                backgroundExecutionActivity?.SetTag("background.pattern", "ToolCalling");
+                backgroundExecutionActivity?.SetTag("background.kernel_plugins", kernel.Plugins.Count);
                 
-                // 🔄 FLOW_STEP: Sending completion callback to parent
-                _logger.LogInformation("🔄 FLOW_STEP: Sending completion callback to parent {ParentId} - AgentId: {AgentId}", 
-                    state.ParentAgentId, state.AgentId);
+                // 🔄 BACKGROUND_STEP: Starting background tool execution
+                _logger.LogInformation("🔄 BACKGROUND_STEP: Starting background tool execution - AgentId: {AgentId}, CallId: {CallId}", 
+                    state.AgentId, callId);
                 
-                await SendCompletionCallback(state.ParentAgentId, result, true);
+                var result = await ExecuteWithDirectTools(task, kernel, state, config);
                 
-                // ✅ FLOW_SUCCESS: Callback sent successfully
-                _logger.LogInformation("✅ FLOW_SUCCESS: Completion callback sent to parent {ParentId} - AgentId: {AgentId}", 
-                    state.ParentAgentId, state.AgentId);
+                backgroundExecutionActivity?.SetTag("background.result_length", result.Length);
+                backgroundExecutionActivity?.SetTag("background.success", true);
                 
-                AgentTracingService.SetSuccess(callbackSendActivity, $"Success callback sent to parent {state.ParentAgentId}");
+                // ✅ BACKGROUND_SUCCESS: Background tool execution completed
+                _logger.LogInformation("✅ BACKGROUND_SUCCESS: Background tool execution completed - AgentId: {AgentId}, CallId: {CallId}, Result length: {Length}", 
+                    state.AgentId, callId, result.Length);
+                
+                AgentTracingService.SetSuccess(backgroundExecutionActivity, "Background tool execution completed successfully");
+                
+                // Phase 2: Send completion callback to parent if exists
+                if (!string.IsNullOrEmpty(state.ParentAgentId))
+                {
+                    using var callbackSendActivity = AgentTracingService.StartAgentActivity("SendAsyncCompletionCallbackToParent", state.AgentId);
+                    callbackSendActivity?.SetTag("async_callback.parent_id", state.ParentAgentId);
+                    callbackSendActivity?.SetTag("async_callback.call_id", callId);
+                    callbackSendActivity?.SetTag("async_callback.success", true);
+                    callbackSendActivity?.SetTag("async_callback.result_length", result.Length);
+                    
+                    // 🔄 BACKGROUND_STEP: Sending completion callback to parent
+                    _logger.LogInformation("🔄 BACKGROUND_STEP: Sending completion callback to parent {ParentId} - AgentId: {AgentId}, CallId: {CallId}", 
+                        state.ParentAgentId, state.AgentId, callId);
+                    
+                    await SendCompletionCallback(state.ParentAgentId, result, true, callId);
+                    
+                    // ✅ BACKGROUND_SUCCESS: Callback sent successfully
+                    _logger.LogInformation("✅ BACKGROUND_SUCCESS: Completion callback sent to parent {ParentId} - AgentId: {AgentId}, CallId: {CallId}", 
+                        state.ParentAgentId, state.AgentId, callId);
+                    
+                    AgentTracingService.SetSuccess(callbackSendActivity, $"Success callback sent to parent {state.ParentAgentId}");
+                }
+                else
+                {
+                    // 🔄 BACKGROUND_STEP: No parent callback needed
+                    _logger.LogInformation("🔄 BACKGROUND_STEP: No parent callback needed (no parent agent) - AgentId: {AgentId}, CallId: {CallId}", 
+                        state.AgentId, callId);
+                }
+                
+                // ✅ BACKGROUND_SUCCESS: Async specialized execution completed
+                _logger.LogInformation("✅ BACKGROUND_SUCCESS: Async specialized execution completed - AgentId: {AgentId}, CallId: {CallId}, Result: {Length} chars", 
+                    state.AgentId, callId, result.Length);
             }
-            else
+            catch (Exception ex)
             {
-                specializedExecutionActivity?.SetTag("specialized.parent_callback", "not_needed_no_parent");
+                // ❌ BACKGROUND_ERROR: Background execution failed
+                _logger.LogError(ex, "❌ BACKGROUND_ERROR: Background specialized execution failed for agent {AgentId}, CallId: {CallId}: {Error}", 
+                    state.AgentId, callId, ex.Message);
                 
-                // 🔄 FLOW_STEP: No parent callback needed
-                _logger.LogInformation("🔄 FLOW_STEP: No parent callback needed (no parent agent) - AgentId: {AgentId}", state.AgentId);
+                // Send failure callback to parent if exists
+                if (!string.IsNullOrEmpty(state.ParentAgentId))
+                {
+                    using var failureCallbackActivity = AgentTracingService.StartAgentActivity("SendAsyncFailureCallbackToParent", state.AgentId);
+                    failureCallbackActivity?.SetTag("async_failure_callback.parent_id", state.ParentAgentId);
+                    failureCallbackActivity?.SetTag("async_failure_callback.call_id", callId);
+                    failureCallbackActivity?.SetTag("async_failure_callback.error", ex.Message);
+                    
+                    // 🔄 BACKGROUND_STEP: Sending failure callback to parent
+                    _logger.LogInformation("🔄 BACKGROUND_STEP: Sending failure callback to parent {ParentId} - AgentId: {AgentId}, CallId: {CallId}, Error: {Error}", 
+                        state.ParentAgentId, state.AgentId, callId, ex.Message);
+                    
+                    var errorMessage = $"Specialized task failed: {ex.Message}";
+                    await SendCompletionCallback(state.ParentAgentId, errorMessage, false, callId);
+                    
+                    AgentTracingService.SetSuccess(failureCallbackActivity, "Failure callback sent to parent");
+                }
+                
+                // 🏁 BACKGROUND_END: Background execution completed with error
+                _logger.LogInformation("🏁 BACKGROUND_END: Background specialized execution - FAILED for agent {AgentId}, CallId: {CallId}", 
+                    state.AgentId, callId);
             }
-            
-            // ✅ FLOW_SUCCESS: Specialized execution completed
-            _logger.LogInformation("✅ FLOW_SUCCESS: SpecializedStateMachine execution completed - AgentId: {AgentId}, Result: {Length} chars", 
-                state.AgentId, result.Length);
-
-            specializedExecutionActivity?.SetTag("specialized.result_length", result.Length);
-            specializedExecutionActivity?.SetTag("specialized.completion_callback_sent", !string.IsNullOrEmpty(state.ParentAgentId));
-            
-            // 🏁 FLOW_END: Specialized state machine execution flow complete
-            _logger.LogInformation("🏁 FLOW_END: SpecializedStateMachine.ExecuteTask - SUCCESS for agent {AgentId}", state.AgentId);
-            
-            AgentTracingService.SetSuccess(specializedExecutionActivity, $"Specialized execution completed: {result.Length} chars result");
-            
-            return result;
-        }
-        catch (Exception ex)
-        {
-            // ❌ FLOW_ERROR: Specialized execution failed
-            _logger.LogError(ex, "❌ FLOW_ERROR: SpecializedStateMachine execution failed for agent {AgentId}: {Error}", 
-                state.AgentId, ex.Message);
-            
-            // Send failure callback to parent if exists
-            if (!string.IsNullOrEmpty(state.ParentAgentId))
-            {
-                using var failureCallbackActivity = AgentTracingService.StartAgentActivity("SendFailureCallbackToParent", state.AgentId);
-                failureCallbackActivity?.SetTag("failure_callback.parent_id", state.ParentAgentId);
-                failureCallbackActivity?.SetTag("failure_callback.error", ex.Message);
-                
-                // 🔄 FLOW_STEP: Sending failure callback to parent
-                _logger.LogInformation("🔄 FLOW_STEP: Sending failure callback to parent {ParentId} - AgentId: {AgentId}, Error: {Error}", 
-                    state.ParentAgentId, state.AgentId, ex.Message);
-                
-                var errorMessage = $"Specialized task failed: {ex.Message}";
-                await SendCompletionCallback(state.ParentAgentId, errorMessage, false);
-                
-                AgentTracingService.SetSuccess(failureCallbackActivity, "Failure callback sent to parent");
-            }
-            
-            // 🏁 FLOW_END: Specialized state machine execution flow complete with error
-            _logger.LogInformation("🏁 FLOW_END: SpecializedStateMachine.ExecuteTask - FAILED for agent {AgentId}", state.AgentId);
-            
-            AgentTracingService.SetError(specializedExecutionActivity, ex);
-            throw;
-        }
+        });
+        
+        // Phase 3: Return immediately after starting background execution
+        var immediateResponse = "Tool execution initiated";
+        
+        specializedExecutionActivity?.SetTag("specialized.immediate_response", immediateResponse);
+        specializedExecutionActivity?.SetTag("specialized.background_call_id", callId);
+        specializedExecutionActivity?.SetTag("specialized.execution_started", true);
+        
+        // ✅ FLOW_SUCCESS: Specialized execution initiated
+        _logger.LogInformation("✅ FLOW_SUCCESS: Specialized execution initiated - AgentId: {AgentId}, CallId: {CallId}, Response: '{Response}'", 
+            state.AgentId, callId, immediateResponse);
+        
+        // 🏁 FLOW_END: Specialized state machine execution flow complete (immediate return)
+        _logger.LogInformation("🏁 FLOW_END: SpecializedStateMachine.ExecuteTask - INITIATED for agent {AgentId}, CallId: {CallId}", 
+            state.AgentId, callId);
+        
+        AgentTracingService.SetSuccess(specializedExecutionActivity, $"Specialized execution initiated: {immediateResponse}");
+        
+        return immediateResponse;
     }
 
     /// <summary>
@@ -341,25 +362,25 @@ public class SpecializedStateMachine : IAgentStateMachine
 
     /// <summary>
     /// Send completion callback to parent agent using Orleans grain communication.
-    /// This maintains compatibility with existing callback infrastructure.
+    /// This maintains compatibility with existing callback infrastructure and supports the async callback pattern.
     /// </summary>
-    private async Task<bool> SendCompletionCallback(string parentId, string result, bool isSuccess)
+    private async Task<bool> SendCompletionCallback(string parentId, string result, bool isSuccess, string callId)
     {
         try
         {
             var parentAgent = _grainFactory.GetGrain<IConfigurableAgentGrain>(parentId);
-            var callId = Guid.NewGuid().ToString();
             
             await parentAgent.ReceiveCallbackAsync(callId, result, isSuccess);
             
-            _logger.LogInformation("Sent completion callback to parent {ParentId}: Success={Success}", 
-                parentId, isSuccess);
+            _logger.LogInformation("Sent async completion callback to parent {ParentId}: CallId={CallId}, Success={Success}", 
+                parentId, callId, isSuccess);
             
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to send completion callback to parent {ParentId}", parentId);
+            _logger.LogError(ex, "Failed to send async completion callback to parent {ParentId}: CallId={CallId}", 
+                parentId, callId);
             return false;
         }
     }

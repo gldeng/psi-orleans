@@ -574,9 +574,8 @@ When finished, you will automatically send a completion callback to your parent 
     }
 
     /// <summary>
-    /// Delegate subtasks to child agents (non-blocking).
-    /// Only delegates tasks that have all dependencies satisfied (CanStart=true).
-    /// Stores pending callbacks for tracking.
+    /// Delegate tasks to child agents using dependency-aware execution.
+    /// Enhanced to support both sync and async callback-driven execution patterns.
     /// </summary>
     private async Task DelegateTasks(List<SubTask> subTasks, ConfigurableAgentState state)
     {
@@ -632,8 +631,25 @@ When finished, you will automatically send a completion callback to your parent 
                         {
                             var result = await childAgent.ProcessTaskAsync(taskWithContext, state.AgentId);
                             
-                            _logger.LogInformation("Child agent {ChildId} completed task successfully", subTask.ChildAgentId);
-                            // Child will send callback automatically when complete
+                            // 🔄 ASYNC_PATTERN_CHECK: Check if child is using async callback pattern
+                            if (IsAsyncCallbackResponse(result))
+                            {
+                                // Child agent is using async callback pattern - wait for callback
+                                _logger.LogInformation("Child agent {ChildId} initiated async execution: {Response}. Awaiting callback...", 
+                                    subTask.ChildAgentId, result);
+                                
+                                // Don't send immediate callback - wait for the actual async callback from child
+                                // The child will send ReceiveCallbackAsync when execution completes
+                            }
+                            else
+                            {
+                                // Child agent completed synchronously - send callback immediately
+                                _logger.LogInformation("Child agent {ChildId} completed task synchronously", subTask.ChildAgentId);
+                                
+                                // Send the result as a callback to maintain consistency
+                                var parentAgent = _grainFactory.GetGrain<IConfigurableAgentGrain>(state.AgentId);
+                                await parentAgent.ReceiveCallbackAsync(callId, result, true);
+                            }
                         }
                         catch (TimeoutException timeoutEx)
                         {
@@ -688,6 +704,26 @@ When finished, you will automatically send a completion callback to your parent 
                 subTask.Status = SubTaskStatus.Failed;
             }
         }
+    }
+
+    /// <summary>
+    /// Check if the response indicates the child agent is using async callback pattern.
+    /// This allows the orchestrator to distinguish between sync and async execution patterns.
+    /// </summary>
+    private bool IsAsyncCallbackResponse(string response)
+    {
+        // Check for standard async callback response patterns
+        var asyncPatterns = new[]
+        {
+            "Tool execution initiated",
+            "Execution initiated",
+            "Background execution started",
+            "Task initiated",
+            "Processing initiated"
+        };
+        
+        return asyncPatterns.Any(pattern => 
+            response.Contains(pattern, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
