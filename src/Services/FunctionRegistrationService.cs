@@ -317,9 +317,7 @@ Calculation details:
 
 This means New York State contributes about 8.33% to the total United States economic output.
 
-Mathematical verification: 2/24 = 0.0833... = 8.33%
-
-Source: Economic data analysis (mocked for testing)";
+Mathematical verification: 2/24 = 0.0833... = 8.33%";
                     }
                     
                     // Mock calculation/division requests - return pure numbers for math functions
@@ -371,9 +369,7 @@ Key Economic Facts:
 - Major sectors: Financial services (Wall Street), real estate, technology, manufacturing
 - Economic rank: Among top 3 state economies in the US
 
-For mathematical calculations, use the value: 2
-
-Source: Mocked economic data for testing purposes";
+For mathematical calculations, use the value: 2";
                     }
                     
                     // Mock US GDP data
@@ -396,8 +392,7 @@ Key Economic Facts:
 - Growth rate: Steady positive growth
 
 For mathematical calculations, use the value: 24
-
-Source: Mocked economic data for testing purposes";
+";
                     }
                     
                     // Generic response for other queries
