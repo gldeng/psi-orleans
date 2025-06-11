@@ -2,6 +2,7 @@ using FluentAssertions;
 using PsiOrleans.Common.Models;
 using System.Text.Json;
 using Xunit;
+using ExecutionContext = PsiOrleans.Common.Models.ExecutionContext;
 
 namespace PsiOrleans.Common.Tests.Models;
 
@@ -378,6 +379,8 @@ public class ExecutionContextTests
     {
         // Arrange
         var agentId = AgentId.NewId();
+        var startedAt = new DateTime(2023, 6, 15, 10, 0, 0, DateTimeKind.Utc);
+        var completedAt = new DateTime(2023, 6, 15, 10, 5, 0, DateTimeKind.Utc);
         var metadata = new Dictionary<string, object>
         {
             ["stringValue"] = "test",
@@ -390,8 +393,8 @@ public class ExecutionContextTests
             agentId,
             "Test task",
             ExecutionStatus.Completed,
-            DateTime.UtcNow,
-            DateTime.UtcNow.AddMinutes(5),
+            startedAt,
+            completedAt,
             metadata,
             "No errors");
 

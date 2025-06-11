@@ -140,7 +140,7 @@ public class ExecutionContext : IEquatable<ExecutionContext>
     /// <returns>A new ExecutionContext instance with the updated status.</returns>
     public ExecutionContext WithStatus(ExecutionStatus status, DateTime? completedAt = null)
     {
-        var finalCompletedAt = status.IsFinished() ? (completedAt ?? DateTime.UtcNow) : null;
+        var finalCompletedAt = status.IsFinished() ? (completedAt ?? DateTime.UtcNow) : (DateTime?)null;
         
         return Create(
             ExecutionId,

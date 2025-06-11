@@ -62,7 +62,14 @@ public class AgentIdentityJsonConverter : JsonConverter<AgentIdentity>
                     case "CreatedAt" or "createdAt":
                         if (reader.TokenType == JsonTokenType.String)
                         {
-                            DateTime.TryParse(reader.GetString(), out createdAt);
+                            if (DateTime.TryParse(reader.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out createdAt))
+                            {
+                                // Ensure UTC if no timezone info
+                                if (createdAt.Kind == DateTimeKind.Unspecified)
+                                {
+                                    createdAt = DateTime.SpecifyKind(createdAt, DateTimeKind.Utc);
+                                }
+                            }
                         }
                         break;
                 }

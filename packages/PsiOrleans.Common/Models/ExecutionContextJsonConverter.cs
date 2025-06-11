@@ -69,14 +69,26 @@ public class ExecutionContextJsonConverter : JsonConverter<ExecutionContext>
                     case "StartedAt" or "startedAt":
                         if (reader.TokenType == JsonTokenType.String)
                         {
-                            DateTime.TryParse(reader.GetString(), out startedAt);
+                            if (DateTime.TryParse(reader.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out startedAt))
+                            {
+                                // Ensure UTC if no timezone info
+                                if (startedAt.Kind == DateTimeKind.Unspecified)
+                                {
+                                    startedAt = DateTime.SpecifyKind(startedAt, DateTimeKind.Utc);
+                                }
+                            }
                         }
                         break;
                     case "CompletedAt" or "completedAt":
                         if (reader.TokenType == JsonTokenType.String)
                         {
-                            if (DateTime.TryParse(reader.GetString(), out var completed))
+                            if (DateTime.TryParse(reader.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var completed))
                             {
+                                // Ensure UTC if no timezone info
+                                if (completed.Kind == DateTimeKind.Unspecified)
+                                {
+                                    completed = DateTime.SpecifyKind(completed, DateTimeKind.Utc);
+                                }
                                 completedAt = completed;
                             }
                         }

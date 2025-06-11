@@ -38,6 +38,11 @@ public class AgentMetrics : IEquatable<AgentMetrics>
         TimeSpan.Zero;
 
     /// <summary>
+    /// Gets an empty metrics instance with all values set to zero.
+    /// </summary>
+    public static AgentMetrics Empty => new();
+
+    /// <summary>
     /// Default constructor (all values zero)
     /// </summary>
     public AgentMetrics()
@@ -76,6 +81,19 @@ public class AgentMetrics : IEquatable<AgentMetrics>
         SuccessfulTasks = successfulTasks;
         FailedTasks = failedTasks;
         TotalExecutionTime = totalExecutionTime;
+    }
+
+    /// <summary>
+    /// Creates a new AgentMetrics instance with the specified values.
+    /// </summary>
+    /// <param name="totalTasks">Total number of tasks attempted.</param>
+    /// <param name="successfulTasks">Number of successfully completed tasks.</param>
+    /// <param name="failedTasks">Number of failed tasks.</param>
+    /// <param name="totalExecutionTime">Total execution time across all tasks.</param>
+    /// <returns>A new AgentMetrics instance.</returns>
+    public static AgentMetrics Create(int totalTasks, int successfulTasks, int failedTasks, TimeSpan totalExecutionTime)
+    {
+        return new AgentMetrics(totalTasks, successfulTasks, failedTasks, totalExecutionTime);
     }
 
     /// <summary>
