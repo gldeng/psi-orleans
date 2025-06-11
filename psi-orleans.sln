@@ -4,6 +4,24 @@ VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "psi-orleans", "psi-orleans.csproj", "{3DA17096-3842-CAF5-FF15-ED7BF6F2A0CD}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TaskAnalyzer.Example", "examples\TaskAnalyzer.Example.csproj", "{DA0F1A09-DDAB-408E-8DD0-0A34EF8FEF27}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "examples", "examples", "{9749C17D-5121-4D68-B6AE-C38328D56869}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{EBDBC4FD-22D9-471A-8D6E-38C390B92B81}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "packages", "packages", "{D0328AE8-AFDD-4FB9-A143-A3611841A82F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PsiOrleans.Common", "packages\PsiOrleans.Common\PsiOrleans.Common.csproj", "{381160A3-2643-4221-B541-BC434A1929E4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PsiOrleans.Analysis", "packages\PsiOrleans.Analysis\PsiOrleans.Analysis.csproj", "{EC6CB31B-4DB8-4C33-866E-B1BC3D3B13D7}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{C009188B-2CFB-498E-A21D-0F0241C1AAED}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PsiOrleans.Common.Tests", "tests\PsiOrleans.Common.Tests\PsiOrleans.Common.Tests.csproj", "{9152685A-26AD-4D30-A763-A7FB385C9E70}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PsiOrleans.Analysis.Tests", "tests\PsiOrleans.Analysis.Tests\PsiOrleans.Analysis.Tests.csproj", "{BEB8BA46-70AC-45F4-A393-1FDE6DCCB352}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -14,11 +32,38 @@ Global
 		{3DA17096-3842-CAF5-FF15-ED7BF6F2A0CD}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{3DA17096-3842-CAF5-FF15-ED7BF6F2A0CD}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{3DA17096-3842-CAF5-FF15-ED7BF6F2A0CD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DA0F1A09-DDAB-408E-8DD0-0A34EF8FEF27}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DA0F1A09-DDAB-408E-8DD0-0A34EF8FEF27}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DA0F1A09-DDAB-408E-8DD0-0A34EF8FEF27}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DA0F1A09-DDAB-408E-8DD0-0A34EF8FEF27}.Release|Any CPU.Build.0 = Release|Any CPU
+		{381160A3-2643-4221-B541-BC434A1929E4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{381160A3-2643-4221-B541-BC434A1929E4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{381160A3-2643-4221-B541-BC434A1929E4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{381160A3-2643-4221-B541-BC434A1929E4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EC6CB31B-4DB8-4C33-866E-B1BC3D3B13D7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EC6CB31B-4DB8-4C33-866E-B1BC3D3B13D7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EC6CB31B-4DB8-4C33-866E-B1BC3D3B13D7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EC6CB31B-4DB8-4C33-866E-B1BC3D3B13D7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9152685A-26AD-4D30-A763-A7FB385C9E70}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9152685A-26AD-4D30-A763-A7FB385C9E70}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9152685A-26AD-4D30-A763-A7FB385C9E70}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9152685A-26AD-4D30-A763-A7FB385C9E70}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BEB8BA46-70AC-45F4-A393-1FDE6DCCB352}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BEB8BA46-70AC-45F4-A393-1FDE6DCCB352}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BEB8BA46-70AC-45F4-A393-1FDE6DCCB352}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BEB8BA46-70AC-45F4-A393-1FDE6DCCB352}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {6CDD2DC3-E461-4288-A574-CFC2D784B564}
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{DA0F1A09-DDAB-408E-8DD0-0A34EF8FEF27} = {9749C17D-5121-4D68-B6AE-C38328D56869}
+		{381160A3-2643-4221-B541-BC434A1929E4} = {D0328AE8-AFDD-4FB9-A143-A3611841A82F}
+		{EC6CB31B-4DB8-4C33-866E-B1BC3D3B13D7} = {D0328AE8-AFDD-4FB9-A143-A3611841A82F}
+		{9152685A-26AD-4D30-A763-A7FB385C9E70} = {C009188B-2CFB-498E-A21D-0F0241C1AAED}
+		{BEB8BA46-70AC-45F4-A393-1FDE6DCCB352} = {C009188B-2CFB-498E-A21D-0F0241C1AAED}
 	EndGlobalSection
 EndGlobal

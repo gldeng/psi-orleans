@@ -90,9 +90,10 @@ public class CoreInterfacesTests
         method!.ReturnType.Should().Be<Task<TaskAnalysisResult>>();
         
         var parameters = method.GetParameters();
-        parameters.Should().HaveCount(2);
+        parameters.Should().HaveCount(3);
         parameters[0].ParameterType.Should().Be<string>(); // task description
         parameters[1].ParameterType.Should().Be<IAgentContext>(); // context
+        parameters[2].ParameterType.Should().Be<AgentConfiguration>(); // configuration
     }
 
     [Fact]
@@ -109,9 +110,10 @@ public class CoreInterfacesTests
         method!.ReturnType.Should().Be<Task<IEnumerable<string>>>();
         
         var parameters = method.GetParameters();
-        parameters.Should().HaveCount(2);
+        parameters.Should().HaveCount(3);
         parameters[0].ParameterType.Should().Be<string>(); // task description
         parameters[1].ParameterType.Should().Be<IAgentContext>(); // context
+        parameters[2].ParameterType.Should().Be<AgentConfiguration>(); // configuration
     }
 
     [Fact]
