@@ -96,25 +96,7 @@ public class CoreInterfacesTests
         parameters[2].ParameterType.Should().Be<AgentConfiguration>(); // configuration
     }
 
-    [Fact]
-    public void ITaskAnalyzer_ShouldHaveBreakdownTaskAsyncMethod()
-    {
-        // Arrange
-        var interfaceType = typeof(ITaskAnalyzer);
-        
-        // Act
-        var method = interfaceType.GetMethod("BreakdownTaskAsync");
-        
-        // Assert
-        method.Should().NotBeNull();
-        method!.ReturnType.Should().Be<Task<IEnumerable<string>>>();
-        
-        var parameters = method.GetParameters();
-        parameters.Should().HaveCount(3);
-        parameters[0].ParameterType.Should().Be<string>(); // task description
-        parameters[1].ParameterType.Should().Be<IAgentContext>(); // context
-        parameters[2].ParameterType.Should().Be<AgentConfiguration>(); // configuration
-    }
+
 
     [Fact]
     public void IOrchestrator_ShouldBeInterface()

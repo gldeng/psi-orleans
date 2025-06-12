@@ -80,10 +80,10 @@ class Program
         var kernel = CreateKernel(azureEndpoint, azureApiKey, azureDeployment, openAiApiKey);
         Console.WriteLine("   ✅ Kernel created successfully");
 
-        // Create TaskAnalyzer with Kernel injection (not IChatCompletionService)
-        Console.WriteLine("2. Injecting Kernel into TaskAnalyzer:");
-        var taskAnalyzer = new PsiOrleans.Analysis.Services.TaskAnalyzer(kernel);
-        Console.WriteLine("   ✅ TaskAnalyzer instantiated with Kernel injection");
+        // Create TaskAnalyzer (no constructor parameters needed)
+        Console.WriteLine("2. Creating TaskAnalyzer:");
+        var taskAnalyzer = new PsiOrleans.Analysis.Services.TaskAnalyzer();
+        Console.WriteLine("   ✅ TaskAnalyzer instantiated");
 
         // Create test configuration and context
         var config = CreateTestConfiguration(hasAzureConfig ? azureDeployment! : "gpt-3.5-turbo", hasAzureConfig ? azureApiKey : openAiApiKey);
@@ -115,15 +115,11 @@ class Program
                 Console.WriteLine($"   → Can Decompose: {result.CanBeDecomposed}");
                 Console.WriteLine($"   → Analysis Notes: {result.AnalysisNotes}");
                 
-                // If it's orchestration, try breakdown
+                // If it's orchestration, note that breakdown is handled by Orchestrator
                 if (result.RecommendedApproach == TaskApproach.Orchestration)
                 {
-                    var breakdown = await taskAnalyzer.BreakdownTaskAsync(testTask.Description, context, config);
-                    Console.WriteLine($"   → Subtasks:");
-                    foreach (var subtask in breakdown)
-                    {
-                        Console.WriteLine($"     • {subtask}");
-                    }
+                    Console.WriteLine($"   → Task breakdown will be handled by OrchestratorStateMachine.PlanDelegation");
+                    Console.WriteLine($"   → Analysis package only determines role, not breakdown");
                 }
                 
                 Console.WriteLine("   ✅ Analysis completed successfully");
