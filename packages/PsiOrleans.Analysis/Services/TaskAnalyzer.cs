@@ -8,16 +8,14 @@ namespace PsiOrleans.Analysis.Services;
 /// <summary>
 /// Core task analysis service that determines whether tasks should be handled by 
 /// ORCHESTRATOR mode (complex, needs decomposition) or SPECIALIZED mode (direct execution).
+/// Implements the same simple LLM-based analysis as the original ConfigurableAgentGrain.
 /// </summary>
 public class TaskAnalyzer : ITaskAnalyzer
 {
-    private readonly Kernel _kernel;
-
-    public TaskAnalyzer(Kernel kernel)
-    {
-        _kernel = kernel ?? throw new ArgumentNullException(nameof(kernel));
-    }
-
+    /// <summary>
+    /// Analyzes a task to determine its complexity and recommended agent role.
+    /// Uses the same LLM prompt logic as the original ConfigurableAgentGrain.AnalyzeTaskAndDetermineRoleAsync.
+    /// </summary>
     public async Task<TaskAnalysisResult> AnalyzeTaskAsync(string taskDescription, IAgentContext context, AgentConfiguration configuration)
     {
         if (string.IsNullOrWhiteSpace(taskDescription))
@@ -29,29 +27,84 @@ public class TaskAnalyzer : ITaskAnalyzer
         if (configuration == null)
             throw new ArgumentNullException(nameof(configuration));
 
+        // Validate API key before proceeding
+        if (string.IsNullOrEmpty(configuration.Model.ApiKey))
+            throw new InvalidOperationException("API key is required for task analysis");
+
         try
         {
-            var role = await DetermineRoleAsync(taskDescription);
-            var isOrchestrator = role == AgentRole.Orchestrator;
+            // Create a kernel for LLM analysis (same approach as original)
+            var kernelBuilder = Kernel.CreateBuilder();
+            
+            // Add chat completion service based on configuration
+            if (configuration.Model.IsAzureOpenAI)
+            {
+                kernelBuilder.AddAzureOpenAIChatCompletion(
+                    configuration.Model.DeploymentName ?? configuration.Model.ModelId,
+                    configuration.Model.Endpoint!,
+                    configuration.Model.ApiKey);
+            }
+            else
+            {
+                kernelBuilder.AddOpenAIChatCompletion(
+                    configuration.Model.ModelId,
+                    configuration.Model.ApiKey);
+            }
 
+            var kernel = kernelBuilder.Build();
+            var chatService = kernel.GetRequiredService<IChatCompletionService>();
+
+            // Use the exact same analysis prompt as the original ConfigurableAgentGrain
+            var analysisPrompt = $@"
+Analyze this task and determine if it should be handled by an ORCHESTRATOR or SPECIALIZED agent.
+
+Task: {taskDescription}
+
+ORCHESTRATOR agents should handle tasks that:
+- Require breaking down into multiple subtasks
+- Need coordination between different capabilities
+- Involve complex multi-step workflows
+- Require delegation and result aggregation
+
+SPECIALIZED agents should handle tasks that:
+- Can be completed with direct tool usage
+- Are focused and specific
+- Don't require task decomposition
+- Can be solved with available functions
+
+Respond with exactly one word: ORCHESTRATOR or SPECIALIZED";
+
+            // Execute LLM analysis (same as original)
+            var result = await chatService.GetChatMessageContentAsync(analysisPrompt);
+            var response = result.Content?.Trim().ToUpperInvariant() ?? "SPECIALIZED";
+
+            // Parse response and determine role (same logic as original)
+            var isOrchestrator = response.Contains("ORCHESTRATOR");
+
+            // Return analysis result using existing TaskAnalysisResult structure
             return new TaskAnalysisResult
             {
                 RecommendedApproach = isOrchestrator ? TaskApproach.Orchestration : TaskApproach.DirectExecution,
                 CanBeDecomposed = isOrchestrator,
-                AnalysisNotes = $"Task requires {role} mode"
+                AnalysisNotes = $"LLM analysis result: {response} (same logic as original ConfigurableAgentGrain)"
             };
         }
         catch (Exception ex)
         {
+            // Default to SPECIALIZED on error (same as original)
             return new TaskAnalysisResult
             {
                 RecommendedApproach = TaskApproach.DirectExecution,
                 CanBeDecomposed = false,
-                AnalysisNotes = $"Fallback to SPECIALIZED mode: {ex.Message}"
+                AnalysisNotes = $"Fallback to SPECIALIZED mode due to error: {ex.Message}"
             };
         }
     }
 
+    /// <summary>
+    /// Breaks down a complex task into smaller subtasks.
+    /// Only performs breakdown for ORCHESTRATOR tasks.
+    /// </summary>
     public async Task<IEnumerable<string>> BreakdownTaskAsync(string taskDescription, IAgentContext context, AgentConfiguration configuration)
     {
         if (string.IsNullOrWhiteSpace(taskDescription))
@@ -63,123 +116,67 @@ public class TaskAnalyzer : ITaskAnalyzer
         if (configuration == null)
             throw new ArgumentNullException(nameof(configuration));
 
-        var role = await DetermineRoleAsync(taskDescription);
+        // Validate API key before proceeding
+        if (string.IsNullOrEmpty(configuration.Model.ApiKey))
+            throw new InvalidOperationException("API key is required for task breakdown");
+
+        // First analyze the task to see if it needs breakdown
+        var analysis = await AnalyzeTaskAsync(taskDescription, context, configuration);
         
-        // SPECIALIZED tasks don't need breakdown
-        if (role == AgentRole.Specialized)
+        if (analysis.RecommendedApproach == TaskApproach.DirectExecution)
+        {
+            // Specialized tasks don't need breakdown
             return new[] { taskDescription };
+        }
 
-        // For ORCHESTRATOR tasks, provide basic breakdown
-        // Note: Full breakdown would typically be handled by Orchestrator package
+        // For orchestrator tasks, use LLM to break down into subtasks
         try
         {
-            return await GetBasicBreakdownAsync(taskDescription);
-        }
-        catch
-        {
-            return new[] { taskDescription };
-        }
-    }
+            var kernelBuilder = Kernel.CreateBuilder();
+            
+            if (configuration.Model.IsAzureOpenAI)
+            {
+                kernelBuilder.AddAzureOpenAIChatCompletion(
+                    configuration.Model.DeploymentName ?? configuration.Model.ModelId,
+                    configuration.Model.Endpoint!,
+                    configuration.Model.ApiKey);
+            }
+            else
+            {
+                kernelBuilder.AddOpenAIChatCompletion(
+                    configuration.Model.ModelId,
+                    configuration.Model.ApiKey);
+            }
 
-    /// <summary>
-    /// Determines whether a task should be handled by ORCHESTRATOR or SPECIALIZED mode.
-    /// </summary>
-    private async Task<AgentRole> DetermineRoleAsync(string taskDescription)
-    {
-        var prompt = $@"Analyze this task and determine if it should be handled by an ORCHESTRATOR or SPECIALIZED agent.
+            var kernel = kernelBuilder.Build();
+            var chatService = kernel.GetRequiredService<IChatCompletionService>();
+
+            var breakdownPrompt = $@"
+Break down this complex task into 3-5 smaller, manageable subtasks:
 
 Task: {taskDescription}
 
-Guidelines:
-- ORCHESTRATOR: Complex tasks requiring coordination, multiple steps, or project management
-- SPECIALIZED: Direct execution tasks completed with specific tools in one interaction
+Return each subtask on a separate line, numbered (1., 2., 3., etc.).
+Each subtask should be specific and actionable.";
 
-Examples:
-- ORCHESTRATOR: ""Plan and execute a marketing campaign""
-- SPECIALIZED: ""Calculate the square root of 144""
+            var result = await chatService.GetChatMessageContentAsync(breakdownPrompt);
+            var response = result.Content ?? "";
 
-Respond with exactly: ORCHESTRATOR or SPECIALIZED";
+            // Parse the numbered subtasks
+            var subtasks = response
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Where(line => line.Trim().Length > 0)
+                .Select(line => line.Trim())
+                .Where(line => char.IsDigit(line[0])) // Only lines starting with numbers
+                .Select(line => line.Substring(line.IndexOf('.') + 1).Trim()) // Remove numbering
+                .ToArray();
 
-        try
-        {
-            // Get chat service from kernel using pattern from ConfigurableKernelService
-            var chatService = _kernel.GetRequiredService<IChatCompletionService>();
-            
-            var chatHistory = new ChatHistory();
-            chatHistory.AddUserMessage(prompt);
-            
-            var results = await chatService.GetChatMessageContentsAsync(chatHistory);
-            var response = results.FirstOrDefault()?.Content?.Trim().ToUpperInvariant() ?? "";
-            
-            return response.Contains("ORCHESTRATOR") ? AgentRole.Orchestrator : AgentRole.Specialized;
-        }
-        catch
-        {
-            return AgentRole.Specialized; // Safe fallback
-        }
-    }
-
-    /// <summary>
-    /// Provides basic task breakdown for ORCHESTRATOR tasks.
-    /// </summary>
-    private async Task<string[]> GetBasicBreakdownAsync(string taskDescription)
-    {
-        var prompt = $@"Break down this task into 2-4 specific subtasks:
-
-Task: {taskDescription}
-
-Provide a numbered list of actionable subtasks.";
-
-        try
-        {
-            // Get chat service from kernel using pattern from ConfigurableKernelService
-            var chatService = _kernel.GetRequiredService<IChatCompletionService>();
-            
-            var chatHistory = new ChatHistory();
-            chatHistory.AddUserMessage(prompt);
-            
-            var results = await chatService.GetChatMessageContentsAsync(chatHistory);
-            var response = results.FirstOrDefault()?.Content ?? "";
-            
-            var subtasks = ExtractSubtasks(response);
             return subtasks.Length > 0 ? subtasks : new[] { taskDescription };
         }
-        catch
+        catch (Exception)
         {
+            // Fallback to original task if breakdown fails
             return new[] { taskDescription };
         }
-    }
-
-    /// <summary>
-    /// Extracts subtasks from LLM response.
-    /// </summary>
-    private static string[] ExtractSubtasks(string response)
-    {
-        var lines = response.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        var subtasks = new List<string>();
-
-        foreach (var line in lines)
-        {
-            var cleaned = line.Trim();
-            
-            // Look for numbered items (1., 2., etc.) or bullet points
-            if (cleaned.Length > 5 && 
-                (char.IsDigit(cleaned[0]) || cleaned.StartsWith('-') || cleaned.StartsWith('•')))
-            {
-                // Remove numbering/bullets and clean up
-                var colonIndex = cleaned.IndexOf(':');
-                var dotIndex = cleaned.IndexOf('.');
-                var startIndex = Math.Max(colonIndex, dotIndex);
-                
-                if (startIndex > 0 && startIndex < cleaned.Length - 1)
-                {
-                    var subtask = cleaned.Substring(startIndex + 1).Trim().Trim('"');
-                    if (!string.IsNullOrWhiteSpace(subtask))
-                        subtasks.Add(subtask);
-                }
-            }
-        }
-
-        return subtasks.ToArray();
     }
 } 
