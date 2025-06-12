@@ -106,14 +106,15 @@ This document outlines the comprehensive refactoring strategy for the PsiOrleans
 - **Design Philosophy:** Test-driven development with framework independence
 
 #### **2. PsiOrleans.Analysis**
-- **Purpose:** Task complexity analysis and role determination
+- **Purpose:** Task complexity analysis and role determination only
 - **Status:** 🔄 **PLANNED - Phase 2**
 - **Components:**
-  - TaskAnalyzer service
+  - TaskAnalyzer service (analysis only, no task breakdown)
   - Multiple analysis strategies (LLM-based, Rule-based, Hybrid)
   - Analysis result models
   - Caching and optimization logic
 - **Dependencies:** Core interfaces (deferred from Phase 1)
+- **Note:** Task breakdown responsibility moved to Orchestrator package for better separation of concerns
 
 #### **3. PsiOrleans.Orchestrator**
 - **Purpose:** Complex task orchestration and child agent management
@@ -250,17 +251,18 @@ This document outlines the comprehensive refactoring strategy for the PsiOrleans
 
 #### **Phase 2: Analysis Logic (4 days)**
 
-**Objective:** Extract and enhance task analysis capabilities
+**Objective:** Extract and enhance task analysis capabilities (analysis only, no breakdown)
 
 **Subtasks:**
 1. **Create TaskAnalyzer Service**
    - Move complexity evaluation logic
    - Implement role determination rules
    - Add error handling and fallbacks
+   - **Removed:** Task breakdown functionality (moved to Orchestrator)
 
 2. **Implement Analysis Strategies**
-   - LLM-based analysis strategy
-   - Rule-based analysis strategy
+   - LLM-based analysis strategy (role determination only)
+   - Rule-based analysis strategy (role determination only)
    - Hybrid strategy combining both approaches
 
 3. **Add Analysis Optimization**
@@ -429,7 +431,7 @@ This document outlines the comprehensive refactoring strategy for the PsiOrleans
 - Edge cases and ambiguous inputs
 
 **LLM Integration:**
-- Standard response parsing ("SIMPLE", "MODERATE", "COMPLEX")
+- Standard response parsing ("SPECIALIZED", "ORCHESTRATOR")
 - Invalid response handling and fallbacks
 - Service timeout and error recovery
 - API rate limiting and quota management
@@ -446,13 +448,21 @@ This document outlines the comprehensive refactoring strategy for the PsiOrleans
 - Historical analysis influence
 - Load balancing considerations
 
+**Removed Test Categories:**
+- ~~Task breakdown scenarios~~ (moved to Orchestrator package)
+- ~~Subtask generation validation~~ (moved to Orchestrator package)
+- ~~Breakdown format parsing~~ (moved to Orchestrator package)
+
 #### **PsiOrleans.Orchestrator Tests**
 
 **Task Decomposition:**
-- Complex task breakdown into subtasks
+- Complex task breakdown into subtasks (via PlanDelegation method)
 - Dependency identification and ordering
 - Parallel vs sequential execution planning
 - Resource requirement analysis
+- **Added:** Task breakdown scenarios (moved from Analysis package)
+- **Added:** Subtask generation validation (moved from Analysis package)
+- **Added:** Breakdown format parsing (moved from Analysis package)
 
 **Child Agent Management:**
 - Dynamic agent creation with specialized configurations
@@ -733,7 +743,37 @@ The **3-day Phase 1 implementation** provides a structured approach to achieve m
 
 ---
 
+## 📝 **CHANGELOG**
+
+### **Version 1.1 - December 2024**
+
+#### **🏗️ Architectural Refinement: Task Breakdown Responsibility**
+
+**Change:** Removed `BreakdownTaskAsync` method from `ITaskAnalyzer` interface and moved task breakdown responsibility exclusively to `OrchestratorStateMachine.PlanDelegation`.
+
+**Rationale:**
+- **Eliminates Duplication:** Both `ITaskAnalyzer.BreakdownTaskAsync` and `OrchestratorStateMachine.PlanDelegation` were performing the same task breakdown function
+- **Improves Separation of Concerns:** Analysis package now focuses solely on complexity analysis and role determination
+- **Better Context Utilization:** Orchestrator has full execution context (Kernel, tools, state) needed for sophisticated task breakdown
+- **Richer Results:** `PlanDelegation` produces `SubTask` objects with dependencies, tools, and priorities vs simple string arrays
+
+**Impact:**
+- **Analysis Package:** Simplified to focus on "what type of processing?" (role determination)
+- **Orchestrator Package:** Enhanced to own "how to execute?" (task breakdown + delegation)
+- **Testing:** Breakdown tests moved from Analysis to Orchestrator package
+- **Performance:** Eliminates redundant LLM calls for task breakdown
+
+**Files Affected:**
+- `packages/PsiOrleans.Common/Interfaces/ITaskAnalyzer.cs` - Removed `BreakdownTaskAsync` method
+- `packages/PsiOrleans.Analysis/` - Removed breakdown implementations and tests
+- `src/Services/OrchestratorStateMachine.cs` - Retains sophisticated `PlanDelegation` method
+- `refactoring-note.md` - Updated package responsibilities and test scenarios
+
+**Architectural Principle:** Single Responsibility Principle - each component has one clear purpose without overlap.
+
+---
+
 **Document Status:** ✅ **Phase 1 Complete - Exceeded Expectations**  
-**Next Steps:** Begin Phase 2 - Analysis package implementation with interfaces  
+**Next Steps:** Begin Phase 2 - Analysis package implementation with refined interface  
 **Review Date:** After Phase 2 completion for continued assessment  
 **Methodology:** Continue TDD approach proven successful in Phase 1
